@@ -89,11 +89,17 @@ async function startServer() {
     env: {
       ...process.env,
       ADMIN_EMAILS: adminEmail,
+      AUTH_RATE_LIMIT_MAX: "10",
+      AUTH_RATE_LIMIT_WINDOW_MS: "60000",
       DATABASE_URL: databaseUrl,
       DIRECT_URL: databaseUrl,
       EMAIL_PROVIDER: "dev",
       HOST: "127.0.0.1",
-      PORT: String(port)
+      PORT: String(port),
+      RESPONSE_RATE_LIMIT_MAX: "1",
+      RESPONSE_RATE_LIMIT_WINDOW_MS: "60000",
+      UPLOAD_RATE_LIMIT_MAX: "1",
+      UPLOAD_RATE_LIMIT_WINDOW_MS: "60000"
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -166,8 +172,9 @@ function encodePathPart(value) {
 }
 
 class ApiClient {
-  constructor() {
+  constructor(options = {}) {
     this.cookies = new Map();
+    this.defaultHeaders = options.headers ?? {};
   }
 
   cookieHeader() {
@@ -197,6 +204,7 @@ class ApiClient {
 
   async request(urlPath, options = {}) {
     const headers = {
+      ...this.defaultHeaders,
       ...(options.body ? { "Content-Type": "application/json" } : {}),
       ...(options.headers ?? {})
     };
@@ -234,6 +242,14 @@ async function expectStatus(requestPromise, status) {
   return result.payload;
 }
 
+function apiClientWithIp(ip) {
+  return new ApiClient({
+    headers: {
+      "X-Forwarded-For": ip
+    }
+  });
+}
+
 test.before(async () => {
   await prepareDatabase();
   await startServer();
@@ -246,7 +262,7 @@ test.after(async () => {
 });
 
 test("API supports auth, publishing, responses, uploads, and moderation", async () => {
-  const guest = new ApiClient();
+  const guest = apiClientWithIp("203.0.113.10");
   const notFound = await guest.request("/api/definitely-not-a-route");
   assert.equal(notFound.response.status, 404);
   assert.equal(notFound.payload.error, "Route not found.");
@@ -257,7 +273,24 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
     assert.equal(initialFeed.stories.length, 4);
   }
 
-  const admin = new ApiClient();
+  const limitedAuth = apiClientWithIp("203.0.113.20");
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const failedLogin = await limitedAuth.json("POST", "/api/auth/login", {
+      email: `missing-${attempt}-${runId}@example.com`,
+      password: "wrong-password"
+    });
+    assert.equal(failedLogin.response.status, 401);
+  }
+  const authLimited = await limitedAuth.json("POST", "/api/auth/login", {
+    email: `missing-limited-${runId}@example.com`,
+    password: "wrong-password"
+  });
+  assert.equal(authLimited.response.status, 429);
+  assert.equal(authLimited.payload.error, "Too many auth attempts. Please wait before trying again.");
+  assert.equal(authLimited.response.headers.get("x-ratelimit-limit"), "10");
+  assert.ok(authLimited.response.headers.get("retry-after"));
+
+  const admin = apiClientWithIp("203.0.113.30");
   const registered = await expectStatus(
     admin.json("POST", "/api/auth/register", {
       name: "Admin Writer",
@@ -340,6 +373,15 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
   assert.equal(uploadedImage.response.status, 200);
   assert.equal(uploadedImage.response.headers.get("content-type"), "image/png");
 
+  const uploadLimited = await admin.json("POST", "/api/uploads", {
+    fileName: "second-cover.png",
+    dataUrl: ONE_PIXEL_PNG
+  });
+  assert.equal(uploadLimited.response.status, 429);
+  assert.equal(uploadLimited.payload.error, "Too many uploads. Please wait before uploading another image.");
+  assert.equal(uploadLimited.response.headers.get("x-ratelimit-limit"), "1");
+  assert.ok(uploadLimited.response.headers.get("retry-after"));
+
   const draft = await expectStatus(
     admin.json("POST", "/api/stories", {
       title: "",
@@ -408,7 +450,7 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
   const emptySearch = await expectStatus(guest.request("/api/stories?search=not-a-real-inkline-term&limit=5"), 200);
   assert.equal(emptySearch.stories.length, 0);
 
-  const reader = new ApiClient();
+  const reader = apiClientWithIp("203.0.113.40");
   const readerEmail = `api-reader-${runId}@example.com`;
   const readerRegistered = await expectStatus(
     reader.json("POST", "/api/auth/register", {
@@ -439,6 +481,14 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
   const responseId = responded.story.responses.at(-1).id;
   assert.ok(responseId);
   assert.equal(responded.story.responseCount, 1);
+
+  const responseLimited = await reader.json("POST", `/api/stories/${encodePathPart(storyId)}/responses`, {
+    text: "This second response should be rate limited."
+  });
+  assert.equal(responseLimited.response.status, 429);
+  assert.equal(responseLimited.payload.error, "Too many responses. Please wait before commenting again.");
+  assert.equal(responseLimited.response.headers.get("x-ratelimit-limit"), "1");
+  assert.ok(responseLimited.response.headers.get("retry-after"));
 
   const hidden = await expectStatus(
     admin.json("POST", `/api/stories/${encodePathPart(storyId)}/responses/${encodePathPart(responseId)}/moderate`, {

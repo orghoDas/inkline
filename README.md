@@ -19,6 +19,7 @@ Inkline is a small Medium-style writing app built for learning. It has a vanilla
 - Admin moderation tools for recent responses and stories.
 - Postgres full-text search across titles, subtitles, authors, topics, and story bodies.
 - Email verification and password reset flows using expiring single-use tokens plus an email delivery adapter.
+- In-memory fixed-window rate limiting for auth, uploads, and responses.
 - Postgres tables, Prisma schema, and Prisma migrations.
 
 ## Database setup
@@ -171,6 +172,21 @@ EMAIL_FROM="Inkline <hello@yourdomain.com>"
 
 Set `ADMIN_EMAILS` to a comma-separated list to make known accounts admins. The first registered user is also made an admin locally so you can reach the moderation tools.
 
+## Rate limiting
+
+The server includes in-memory fixed-window limits for noisy write paths:
+
+```env
+AUTH_RATE_LIMIT_MAX=30
+AUTH_RATE_LIMIT_WINDOW_MS=900000
+UPLOAD_RATE_LIMIT_MAX=20
+UPLOAD_RATE_LIMIT_WINDOW_MS=3600000
+RESPONSE_RATE_LIMIT_MAX=12
+RESPONSE_RATE_LIMIT_WINDOW_MS=300000
+```
+
+Auth limits are keyed by client IP. Upload and response limits are keyed by signed-in user. This is enough for a single Node server; for multi-instance production, move counters to Redis or another shared store.
+
 ## Learning path
 
 1. Trace `boot()` in `app.js` to see how the page loads session data and stories.
@@ -183,13 +199,13 @@ Set `ADMIN_EMAILS` to a comma-separated list to make known accounts admins. The 
 8. Read `handleUploadPrisma()`, `handleUpdateMePrisma()`, and `handleAdminModerationPrisma()` to see direct Prisma file metadata, profile, and admin flows.
 9. Read `importJsonDatabase()` and `writeDb()` in `server.js` to understand how old `data/db.json` records are imported into Postgres tables.
 10. Read `findPublishedStoryIdsBySearch()` and the full-text search migration to see how Postgres ranks matching stories.
-11. Read `test/api.test.js` to see how the auth, story, upload, response, and moderation flows can be tested through HTTP.
-12. Read `validateStoryInput()` to see how drafts and published stories use different validation rules.
-13. Use `npm run db:studio` to inspect the database visually while you create stories in the app.
+11. Read `applyRateLimit()` to see how fixed-window rate limiting protects auth, uploads, and responses.
+12. Read `test/api.test.js` to see how the auth, story, upload, response, and moderation flows can be tested through HTTP.
+13. Read `validateStoryInput()` to see how drafts and published stories use different validation rules.
+14. Use `npm run db:studio` to inspect the database visually while you create stories in the app.
 
 ## Next useful features
 
-- Add rate limiting for auth, comments, and uploads.
 - Move uploaded images to Supabase Storage, S3, or another object store.
 - Add browser-level tests for the writing and reading UI.
 - Add CI so `npm test` and `npm run check` run before deployment.

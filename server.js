@@ -23,6 +23,41 @@ const ADMIN_EMAILS = new Set(
     .filter(Boolean)
 );
 
+function positiveIntegerEnv(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+const RATE_LIMITS = {
+  auth: {
+    name: "auth",
+    max: positiveIntegerEnv("AUTH_RATE_LIMIT_MAX", 30),
+    windowMs: positiveIntegerEnv("AUTH_RATE_LIMIT_WINDOW_MS", 15 * 60 * 1000),
+    message: "Too many auth attempts. Please wait before trying again."
+  },
+  upload: {
+    name: "upload",
+    max: positiveIntegerEnv("UPLOAD_RATE_LIMIT_MAX", 20),
+    windowMs: positiveIntegerEnv("UPLOAD_RATE_LIMIT_WINDOW_MS", 60 * 60 * 1000),
+    message: "Too many uploads. Please wait before uploading another image."
+  },
+  response: {
+    name: "response",
+    max: positiveIntegerEnv("RESPONSE_RATE_LIMIT_MAX", 12),
+    windowMs: positiveIntegerEnv("RESPONSE_RATE_LIMIT_WINDOW_MS", 5 * 60 * 1000),
+    message: "Too many responses. Please wait before commenting again."
+  }
+};
+
+const RATE_LIMITED_AUTH_PATHS = new Set([
+  "/api/auth/register",
+  "/api/auth/login",
+  "/api/auth/request-verification",
+  "/api/auth/verify-email",
+  "/api/auth/request-reset",
+  "/api/auth/reset-password"
+]);
+
 const seedStories = [
   {
     id: "starter-design-systems",
@@ -87,6 +122,7 @@ const seedStories = [
 ];
 
 let prisma;
+const rateLimitBuckets = new Map();
 
 function getDatabaseUrl() {
   if (!process.env.DATABASE_URL) {
@@ -326,13 +362,14 @@ async function writeDb(db) {
 function sendJson(res, status, payload, headers = {}) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
+    ...(res.rateLimitHeaders ?? {}),
     ...headers
   });
   res.end(JSON.stringify(payload));
 }
 
-function sendError(res, status, message) {
-  sendJson(res, status, { error: message });
+function sendError(res, status, message, headers = {}) {
+  sendJson(res, status, { error: message }, headers);
 }
 
 function parseCookies(req) {
@@ -423,10 +460,68 @@ async function saveImageUploadPrisma(body, user) {
 }
 
 class HttpError extends Error {
-  constructor(status, message) {
+  constructor(status, message, headers = {}) {
     super(message);
     this.status = status;
+    this.headers = headers;
   }
+}
+
+function getClientIp(req) {
+  const forwardedFor = String(req.headers["x-forwarded-for"] ?? "")
+    .split(",")[0]
+    .trim();
+
+  return forwardedFor || req.socket?.remoteAddress || "unknown";
+}
+
+function pruneRateLimitBuckets(now) {
+  if (rateLimitBuckets.size < 5000) return;
+
+  for (const [key, bucket] of rateLimitBuckets.entries()) {
+    if (bucket.resetAt <= now) {
+      rateLimitBuckets.delete(key);
+    }
+  }
+}
+
+function applyRateLimit(req, res, limiter, subject = null) {
+  const now = Date.now();
+  pruneRateLimitBuckets(now);
+
+  const identity = subject ? `user:${subject}` : `ip:${getClientIp(req)}`;
+  const key = `${limiter.name}:${identity}`;
+  let bucket = rateLimitBuckets.get(key);
+
+  if (!bucket || bucket.resetAt <= now) {
+    bucket = {
+      count: 0,
+      resetAt: now + limiter.windowMs
+    };
+  }
+
+  bucket.count += 1;
+  rateLimitBuckets.set(key, bucket);
+
+  const retryAfter = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
+  const remaining = Math.max(0, limiter.max - bucket.count);
+  const headers = {
+    "X-RateLimit-Limit": String(limiter.max),
+    "X-RateLimit-Remaining": String(remaining),
+    "X-RateLimit-Reset": String(Math.ceil(bucket.resetAt / 1000))
+  };
+  res.rateLimitHeaders = headers;
+
+  if (bucket.count > limiter.max) {
+    throw new HttpError(429, limiter.message, {
+      ...headers,
+      "Retry-After": String(retryAfter)
+    });
+  }
+}
+
+function shouldRateLimitAuth(req, url) {
+  return req.method === "POST" && RATE_LIMITED_AUTH_PATHS.has(url.pathname);
 }
 
 function normalizeText(value, maxLength) {
@@ -1116,6 +1211,7 @@ async function findResponseForActionPrisma(story, responseId) {
 async function handleCreateResponsePrisma(req, res, storyId) {
   await ensureDb();
   const signedInUser = await requireUserPrisma(req);
+  applyRateLimit(req, res, RATE_LIMITS.response, signedInUser.id);
   const story = await findStoryForActionPrisma(storyId, signedInUser);
   const body = await readJsonBody(req);
   const text = normalizeText(body.text, 500);
@@ -1385,6 +1481,7 @@ async function handleLogoutPrisma(req, res) {
 async function handleUploadPrisma(req, res) {
   await ensureDb();
   const signedInUser = await requireUserPrisma(req);
+  applyRateLimit(req, res, RATE_LIMITS.upload, signedInUser.id);
   const body = await readJsonBody(req);
   const url = await saveImageUploadPrisma(body, signedInUser);
 
@@ -1561,6 +1658,10 @@ async function handleAdminDeleteStoryPrisma(req, res, storyId) {
 }
 
 async function handleApi(req, res, url) {
+  if (shouldRateLimitAuth(req, url)) {
+    applyRateLimit(req, res, RATE_LIMITS.auth);
+  }
+
   if (req.method === "GET" && url.pathname === "/api/stories") {
     return handleStoryIndexPrisma(req, res, url);
   }
@@ -1756,7 +1857,7 @@ const server = http.createServer(async (req, res) => {
     await serveStatic(req, res, url);
   } catch (error) {
     if (error instanceof HttpError) {
-      sendError(res, error.status, error.message);
+      sendError(res, error.status, error.message, error.headers);
       return;
     }
 
