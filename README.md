@@ -1,5 +1,7 @@
 # Inkline
 
+[![CI](https://github.com/orghoDas/inkline/actions/workflows/ci.yml/badge.svg)](https://github.com/orghoDas/inkline/actions/workflows/ci.yml)
+
 Inkline is a small Medium-style writing app built for learning. It has a vanilla HTML/CSS/JS frontend, a Node HTTP backend, and Postgres persistence through Prisma.
 
 ## What is included
@@ -126,6 +128,8 @@ Use `TEST_DATABASE_URL` if you want to point the tests at your own disposable da
 TEST_DATABASE_URL="postgresql://YOUR_MAC_USER@localhost:5432/inkline_test" npm test
 ```
 
+GitHub Actions runs `npm run check` and `npm test` against Postgres on every push and pull request to `main`.
+
 Useful database commands:
 
 ```bash
@@ -223,4 +227,4 @@ Auth limits are keyed by client IP. Upload and response limits are keyed by sign
 
 - Add storage cleanup for deleted stories and replaced cover images.
 - Add browser-level tests for the writing and reading UI.
-- Add CI so `npm test` and `npm run check` run before deployment.
+- Add deploy docs for a hosted Node runtime.
