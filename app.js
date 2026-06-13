@@ -17,7 +17,8 @@ const state = {
   searchTimer: null,
   adminModeration: {
     responses: [],
-    stories: []
+    stories: [],
+    diagnostics: []
   },
   pageSize: 3
 };
@@ -110,6 +111,7 @@ const elements = {
   requestVerificationButton: document.querySelector("#requestVerificationButton"),
   adminResponseList: document.querySelector("#adminResponseList"),
   adminStoryList: document.querySelector("#adminStoryList"),
+  adminDiagnosticList: document.querySelector("#adminDiagnosticList"),
   resetTokenInput: document.querySelector("#resetTokenInput"),
   resetEmailInput: document.querySelector("#resetEmailInput"),
   resetPasswordInput: document.querySelector("#resetPasswordInput"),
@@ -998,6 +1000,7 @@ async function moderateResponse(responseId, status) {
 function renderAdminModeration() {
   elements.adminResponseList.replaceChildren();
   elements.adminStoryList.replaceChildren();
+  elements.adminDiagnosticList.replaceChildren();
 
   if (state.adminModeration.responses.length === 0) {
     elements.adminResponseList.append(createElement("p", { className: "empty-state compact-empty", text: "No responses yet." }));
@@ -1060,6 +1063,35 @@ function renderAdminModeration() {
     card.append(title, meta, actions);
     elements.adminStoryList.append(card);
   });
+
+  if (state.adminModeration.diagnostics.length === 0) {
+    elements.adminDiagnosticList.append(createElement("p", { className: "empty-state compact-empty", text: "No diagnostics yet." }));
+  }
+
+  state.adminModeration.diagnostics.forEach((event) => {
+    const card = createElement("article", {
+      className: `admin-card diagnostic-card${event.severity === "error" ? " is-error" : ""}`
+    });
+    const title = createElement("strong", { text: event.message });
+    const meta = createElement("span", { text: `${event.type} | ${event.severity} | ${event.dateLabel}` });
+    const context = createElement("p", { text: diagnosticContextSummary(event.context) });
+
+    card.append(title, meta);
+    if (context.textContent) {
+      card.append(context);
+    }
+    elements.adminDiagnosticList.append(card);
+  });
+}
+
+function diagnosticContextSummary(context) {
+  if (!context || typeof context !== "object") return "";
+
+  return Object.entries(context)
+    .filter(([, value]) => value !== null && value !== undefined && value !== "")
+    .slice(0, 5)
+    .map(([key, value]) => `${key}: ${String(value)}`)
+    .join(" | ");
 }
 
 async function refreshAdminModeration() {

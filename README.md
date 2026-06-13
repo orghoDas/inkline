@@ -18,12 +18,13 @@ Inkline is a small Medium-style writing app built for learning. It has a vanilla
 - Claps, bookmarks, and reader responses.
 - Response deletion by the response author or story author.
 - Response hiding/showing by story authors and admins.
-- Admin moderation tools for recent responses and stories.
+- Admin moderation tools for recent responses, stories, and production diagnostics.
 - Postgres full-text search across titles, subtitles, authors, topics, and story bodies.
 - Email verification and password reset flows using expiring single-use tokens plus an email delivery adapter.
 - In-memory fixed-window rate limiting for auth, uploads, and responses.
 - Postgres tables, Prisma schema, and Prisma migrations.
 - API and browser-level tests for the main publishing flow.
+- Admin diagnostics for failed email delivery and image cleanup.
 
 ## Database setup
 
@@ -181,6 +182,7 @@ Then open the app in the browser and check:
 - Add a response, clap, and bookmark.
 - Request a password reset and confirm the reset link uses `APP_URL`.
 - Confirm the host logs do not show migration, email, storage, or Prisma errors.
+- Open Admin tools and confirm Diagnostics is empty after the smoke test.
 
 ## Test it
 
@@ -239,6 +241,7 @@ npm run db:studio
 - `prisma/migrations/` contains SQL migrations generated from the Prisma schema.
 - `data/db.json` is now legacy local data that can be imported with `npm run db:import-json`.
 - `uploads/` is created automatically when local image storage is enabled.
+- Admin diagnostics are stored in the `SystemEvent` table and shown in Admin tools.
 
 ## API map
 
@@ -284,7 +287,7 @@ RESEND_API_KEY=your_resend_key
 EMAIL_FROM="Inkline <hello@yourdomain.com>"
 ```
 
-`APP_URL` is used inside verification and password reset links. Set it to the real HTTPS origin users will open in the browser. `RESEND_API_KEY` must stay on the server and must not be exposed in browser code or committed to Git.
+`APP_URL` is used inside verification and password reset links. Set it to the real HTTPS origin users will open in the browser. `RESEND_API_KEY` must stay on the server and must not be exposed in browser code or committed to Git. If `EMAIL_PROVIDER=resend` is configured incorrectly, Inkline records an admin diagnostic and does not show a development link to users.
 
 Production email setup checklist:
 
@@ -323,7 +326,7 @@ Auth limits are keyed by client IP. Upload and response limits are keyed by sign
 5. Read `handleRegisterPrisma()`, `handleLoginPrisma()`, and `handleResetPasswordPrisma()` to see direct Prisma auth/session writes.
 6. Follow `submitStory()` into `handleCreateStoryPrisma()` and `handleUpdateStoryPrisma()` to see frontend data become persisted Postgres data.
 7. Read `handleCreateResponsePrisma()`, `handleDeleteResponsePrisma()`, and `handleModerateResponsePrisma()` to see direct Prisma comment writes.
-8. Read `handleUploadPrisma()`, `handleUpdateMePrisma()`, and `handleAdminModerationPrisma()` to see direct Prisma file metadata, profile, and admin flows.
+8. Read `handleUploadPrisma()`, `handleUpdateMePrisma()`, and `handleAdminModerationPrisma()` to see direct Prisma file metadata, profile, diagnostics, and admin flows.
 9. Read `importJsonDatabase()` and `writeDb()` in `server.js` to understand how old `data/db.json` records are imported into Postgres tables.
 10. Read `findPublishedStoryIdsBySearch()` and the full-text search migration to see how Postgres ranks matching stories.
 11. Read `applyRateLimit()` to see how fixed-window rate limiting protects auth, uploads, and responses.
@@ -335,5 +338,5 @@ Auth limits are keyed by client IP. Upload and response limits are keyed by sign
 
 ## Next useful features
 
-- Add production diagnostics for failed email delivery and storage cleanup.
 - Add a Redis-backed rate limiter for multi-instance production deploys.
+- Add a retry or resolve workflow for stored production diagnostics.

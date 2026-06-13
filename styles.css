@@ -868,6 +868,10 @@ dialog::backdrop {
   gap: 24px;
 }
 
+.admin-diagnostics-section {
+  grid-column: 1 / -1;
+}
+
 .admin-list {
   display: grid;
   gap: 12px;
@@ -885,6 +889,11 @@ dialog::backdrop {
 
 .admin-card.is-hidden {
   background: #f6f4ee;
+}
+
+.admin-card.is-error {
+  border-color: #e2a49a;
+  background: #fff4f1;
 }
 
 .admin-card strong {

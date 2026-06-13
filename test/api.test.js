@@ -27,6 +27,7 @@ let storageBaseUrl;
 const uploadedFiles = new Set();
 const storageObjects = new Map();
 const storageRequests = [];
+let failNextStorageDelete = false;
 
 function run(command, args, env = {}) {
   try {
@@ -110,6 +111,19 @@ async function startFakeSupabaseStorage() {
         assert.equal(req.headers.apikey, "test-service-key");
 
         const objectPath = decodeURIComponent(url.pathname.slice(uploadPrefix.length));
+
+        if (failNextStorageDelete) {
+          failNextStorageDelete = false;
+          storageRequests.push({
+            method: req.method,
+            objectPath,
+            failed: true
+          });
+          res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("storage delete failed");
+          return;
+        }
+
         storageRequests.push({
           method: req.method,
           objectPath
@@ -179,7 +193,7 @@ async function prepareDatabase() {
   });
 }
 
-async function startServer() {
+async function startServer(envOverrides = {}) {
   const port = await getFreePort();
   baseUrl = `http://127.0.0.1:${port}`;
   serverOutput = "";
@@ -203,8 +217,9 @@ async function startServer() {
       SUPABASE_STORAGE_BUCKET: "inkline-test",
       SUPABASE_STORAGE_PATH_PREFIX: "story-covers",
       SUPABASE_URL: storageBaseUrl,
-      UPLOAD_RATE_LIMIT_MAX: "2",
-      UPLOAD_RATE_LIMIT_WINDOW_MS: "60000"
+      UPLOAD_RATE_LIMIT_MAX: "3",
+      UPLOAD_RATE_LIMIT_WINDOW_MS: "60000",
+      ...envOverrides
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -498,6 +513,18 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
   assert.equal(uploadedImage.response.status, 200);
   assert.equal(uploadedImage.response.headers.get("content-type"), "image/png");
 
+  const storyUpload = await expectStatus(
+    admin.json("POST", "/api/uploads", {
+      fileName: "story-cover.png",
+      dataUrl: ONE_PIXEL_PNG
+    }),
+    201
+  );
+  assert.ok(storyUpload.url.startsWith(`${storageBaseUrl}/storage/v1/object/public/inkline-test/story-covers/`));
+  const storyUploadedObject = latestStorageRequest("POST").objectPath;
+  assert.notEqual(storyUploadedObject, firstUploadedObject);
+  assert.equal(storageObjects.has(storyUploadedObject), true);
+
   const replacementUpload = await expectStatus(
     admin.json("POST", "/api/uploads", {
       fileName: "replacement-cover.png",
@@ -508,17 +535,18 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
   assert.ok(replacementUpload.url.startsWith(`${storageBaseUrl}/storage/v1/object/public/inkline-test/story-covers/`));
   const replacementUploadedObject = latestStorageRequest("POST").objectPath;
   assert.notEqual(replacementUploadedObject, firstUploadedObject);
+  assert.notEqual(replacementUploadedObject, storyUploadedObject);
   assert.equal(storageObjects.has(replacementUploadedObject), true);
 
   const uploadLimited = await admin.json("POST", "/api/uploads", {
-    fileName: "third-cover.png",
+    fileName: "fourth-cover.png",
     dataUrl: ONE_PIXEL_PNG
   });
   assert.equal(uploadLimited.response.status, 429);
   assert.equal(uploadLimited.payload.error, "Too many uploads. Please wait before uploading another image.");
-  assert.equal(uploadLimited.response.headers.get("x-ratelimit-limit"), "2");
+  assert.equal(uploadLimited.response.headers.get("x-ratelimit-limit"), "3");
   assert.ok(uploadLimited.response.headers.get("retry-after"));
-  assert.equal(storageRequests.filter((request) => request.method === "POST").length, 2);
+  assert.equal(storageRequests.filter((request) => request.method === "POST").length, 3);
 
   const draft = await expectStatus(
     admin.json("POST", "/api/stories", {
@@ -537,13 +565,14 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
   assert.ok(drafts.drafts.some((candidate) => candidate.id === draft.story.id));
 
   await expectStatus(admin.request(`/api/stories/${encodePathPart(draft.story.id)}`, { method: "DELETE" }), 200);
+  assert.equal(storageObjects.has(firstUploadedObject), false);
 
   const created = await expectStatus(
     admin.json("POST", "/api/stories", {
       title: "Prisma API test story",
       excerpt: "A durable smoke test for the learning project.",
       topic: "Testing",
-      image: upload.url,
+      image: storyUpload.url,
       bodyHtml: "<p>This story is created by the API test suite.</p><script>alert('nope')</script>",
       status: "published"
     }),
@@ -553,6 +582,7 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
   assert.equal(created.story.canEdit, true);
   assert.doesNotMatch(created.story.bodyHtml, /script/i);
 
+  failNextStorageDelete = true;
   const edited = await expectStatus(
     admin.json("PUT", `/api/stories/${encodePathPart(storyId)}`, {
       title: "Prisma API test story edited",
@@ -565,9 +595,19 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
     200
   );
   assert.equal(edited.story.slug, "prisma-api-test-story-edited");
-  assert.equal(latestStorageRequest("DELETE").objectPath, firstUploadedObject);
-  assert.equal(storageObjects.has(firstUploadedObject), false);
+  const failedDelete = latestStorageRequest("DELETE");
+  assert.equal(failedDelete.objectPath, storyUploadedObject);
+  assert.equal(failedDelete.failed, true);
+  assert.equal(storageObjects.has(storyUploadedObject), true);
   assert.equal(storageObjects.has(replacementUploadedObject), true);
+
+  const diagnosticsAfterCleanupFailure = await expectStatus(admin.request("/api/admin/moderation"), 200);
+  const cleanupDiagnostic = diagnosticsAfterCleanupFailure.diagnostics.find(
+    (event) => event.type === "storage_cleanup_failed" && event.context?.fileName === storyUploadedObject
+  );
+  assert.ok(cleanupDiagnostic);
+  assert.equal(cleanupDiagnostic.severity, "warning");
+  assert.match(cleanupDiagnostic.context.error, /storage delete failed/);
 
   const updatedProfile = await expectStatus(
     admin.json("PUT", "/api/me", {
@@ -580,6 +620,25 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
   assert.equal(updatedProfile.user.name, "Ada Prisma");
   assert.equal(updatedProfile.user.emailVerified, false);
   assert.equal(updatedProfile.devEmail.type, "verify-email");
+
+  await stopServer();
+  await startServer({
+    EMAIL_PROVIDER: "resend",
+    RESEND_API_KEY: ""
+  });
+  const failedEmailDelivery = await expectStatus(admin.json("POST", "/api/auth/request-verification"), 200);
+  assert.equal(failedEmailDelivery.emailDelivery.delivered, false);
+  assert.equal(failedEmailDelivery.emailDelivery.provider, "resend");
+  assert.equal(failedEmailDelivery.devEmail, null);
+  const diagnosticsAfterEmailFailure = await expectStatus(admin.request("/api/admin/moderation"), 200);
+  const emailDiagnostic = diagnosticsAfterEmailFailure.diagnostics.find(
+    (event) => event.type === "email_delivery_failed" && event.context?.type === "verify-email"
+  );
+  assert.ok(emailDiagnostic);
+  assert.equal(emailDiagnostic.severity, "error");
+  assert.match(emailDiagnostic.message, /RESEND_API_KEY is missing/);
+  await stopServer();
+  await startServer();
 
   const detailAfterProfile = await expectStatus(admin.request(`/api/stories/${encodePathPart(storyId)}`), 200);
   assert.equal(detailAfterProfile.story.authorName, "Ada Prisma");
@@ -642,6 +701,7 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
   const moderation = await expectStatus(admin.request("/api/admin/moderation"), 200);
   assert.ok(moderation.responses.some((response) => response.id === responseId && response.status === "hidden"));
   assert.ok(moderation.stories.some((story) => story.id === storyId && story.hiddenResponses === 1));
+  assert.ok(moderation.diagnostics.some((event) => event.type === "storage_cleanup_failed"));
 
   const visible = await expectStatus(
     admin.json("POST", `/api/admin/responses/${encodePathPart(responseId)}/moderate`, {

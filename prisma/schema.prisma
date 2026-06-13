@@ -115,3 +115,16 @@ model DevEmail {
   link      String
   delivery  String
 }
+
+model SystemEvent {
+  id        String   @id
+  createdAt DateTime @default(now())
+  type      String
+  severity  String
+  message   String
+  context   Json?
+
+  @@index([createdAt])
+  @@index([type, createdAt])
+  @@index([severity, createdAt])
+}

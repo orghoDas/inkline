@@ -202,6 +202,18 @@ function serializeCreatedAt(record) {
   };
 }
 
+function serializeSystemEvent(event) {
+  return {
+    id: event.id,
+    type: event.type,
+    severity: event.severity,
+    message: event.message,
+    context: event.context ?? null,
+    dateLabel: dateLabel(event.createdAt),
+    createdAt: toIso(event.createdAt)
+  };
+}
+
 async function seedStarterStories(client = getPrisma()) {
   const storyCount = await client.story.count();
   if (storyCount > 0) return false;
@@ -247,6 +259,7 @@ async function writeDb(db) {
     await tx.story.deleteMany({});
     await tx.user.deleteMany({});
     await tx.devEmail.deleteMany({});
+    await tx.systemEvent.deleteMany({});
 
     if (users.length > 0) {
       await tx.user.createMany({
@@ -544,7 +557,7 @@ async function deleteSupabaseImageUpload(upload) {
 
   if (!response.ok && response.status !== 404) {
     const text = await response.text();
-    console.warn(`Could not delete stored image ${upload.fileName}: ${text.slice(0, 160)}`);
+    throw new Error(`Supabase Storage returned ${response.status}: ${text.slice(0, 160)}`);
   }
 }
 
@@ -566,6 +579,18 @@ async function deleteStoredImageIfOwned(url) {
       where: { id: upload.id }
     });
   } catch (error) {
+    await recordSystemEvent({
+      type: "storage_cleanup_failed",
+      severity: "warning",
+      message: `Could not clean up stored image ${upload.fileName}.`,
+      context: {
+        provider: STORAGE_PROVIDER,
+        uploadId: upload.id,
+        fileName: upload.fileName,
+        url: upload.url,
+        error: safeErrorMessage(error)
+      }
+    });
     console.warn(`Could not clean up stored image ${upload.fileName}:`, error);
   }
 }
@@ -662,6 +687,53 @@ function shouldRateLimitAuth(req, url) {
 
 function normalizeText(value, maxLength) {
   return String(value ?? "").trim().replace(/\s+/g, " ").slice(0, maxLength);
+}
+
+function safeErrorMessage(error) {
+  return error instanceof Error ? error.message : String(error ?? "Unknown error.");
+}
+
+function diagnosticContext(context = {}) {
+  try {
+    return JSON.parse(
+      JSON.stringify(context, (key, value) => {
+        if (value instanceof Error) return safeErrorMessage(value);
+        if (typeof value === "string") return value.slice(0, 1000);
+        return value;
+      })
+    );
+  } catch {
+    return { note: "Diagnostic context could not be serialized." };
+  }
+}
+
+async function recordSystemEvent({ type, severity = "warning", message, context = {} }) {
+  try {
+    const client = getPrisma();
+    await client.systemEvent.create({
+      data: {
+        id: crypto.randomUUID(),
+        type: normalizeText(type, 80),
+        severity: normalizeText(severity, 20),
+        message: normalizeText(message, 240),
+        context: diagnosticContext(context),
+        createdAt: new Date()
+      }
+    });
+
+    const extraEvents = await client.systemEvent.findMany({
+      orderBy: { createdAt: "desc" },
+      skip: 100,
+      select: { id: true }
+    });
+    if (extraEvents.length > 0) {
+      await client.systemEvent.deleteMany({
+        where: { id: { in: extraEvents.map((event) => event.id) } }
+      });
+    }
+  } catch (error) {
+    console.warn("Could not record system diagnostic event:", error);
+  }
 }
 
 function slugify(value) {
@@ -831,25 +903,69 @@ async function sendEmailPrisma(req, message) {
     html: `<p>${escapeAttribute(message.subject)}</p><p><a href="${escapeAttribute(message.link)}">${escapeAttribute(message.link)}</a></p>`
   };
 
-  if (EMAIL_PROVIDER === "resend" && process.env.RESEND_API_KEY) {
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(email)
-    });
-
-    if (response.ok) {
-      const result = await response.json();
-      return {
-        delivered: true,
-        provider: "resend",
-        id: result.id ?? null,
-        devEmail: null
-      };
+  if (EMAIL_PROVIDER === "resend") {
+    if (!process.env.RESEND_API_KEY) {
+      await recordSystemEvent({
+        type: "email_delivery_failed",
+        severity: "error",
+        message: `Could not send ${message.type} email because RESEND_API_KEY is missing.`,
+        context: {
+          provider: "resend",
+          type: message.type,
+          to: message.to
+        }
+      });
+      return { delivered: false, provider: "resend", id: null, devEmail: null };
     }
+
+    try {
+      const response = await fetch(process.env.RESEND_API_URL ?? "https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(email)
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        return {
+          delivered: true,
+          provider: "resend",
+          id: result.id ?? null,
+          devEmail: null
+        };
+      }
+
+      const text = await response.text();
+      await recordSystemEvent({
+        type: "email_delivery_failed",
+        severity: "error",
+        message: `Resend could not send ${message.type} email.`,
+        context: {
+          provider: "resend",
+          type: message.type,
+          to: message.to,
+          status: response.status,
+          response: text.slice(0, 500)
+        }
+      });
+    } catch (error) {
+      await recordSystemEvent({
+        type: "email_delivery_failed",
+        severity: "error",
+        message: `Resend could not send ${message.type} email.`,
+        context: {
+          provider: "resend",
+          type: message.type,
+          to: message.to,
+          error: safeErrorMessage(error)
+        }
+      });
+    }
+
+    return { delivered: false, provider: "resend", id: null, devEmail: null };
   }
 
   return {
@@ -1720,7 +1836,7 @@ async function handleAdminModerationPrisma(req, res) {
   await ensureDb();
   await requireAdminPrisma(req);
   const client = getPrisma();
-  const [responses, stories] = await Promise.all([
+  const [responses, stories, diagnostics] = await Promise.all([
     client.response.findMany({
       orderBy: { createdAt: "desc" },
       take: 30,
@@ -1730,6 +1846,10 @@ async function handleAdminModerationPrisma(req, res) {
       orderBy: { createdAt: "desc" },
       take: 30,
       include: storyPrismaInclude(null)
+    }),
+    client.systemEvent.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 30
     })
   ]);
   const storyIds = stories.map((story) => story.id);
@@ -1750,7 +1870,8 @@ async function handleAdminModerationPrisma(req, res) {
 
   return sendJson(res, 200, {
     responses: responses.map(publicAdminResponseFromPrisma),
-    stories: stories.map((story) => publicAdminStoryFromPrisma(story, responseCounts))
+    stories: stories.map((story) => publicAdminStoryFromPrisma(story, responseCounts)),
+    diagnostics: diagnostics.map(serializeSystemEvent)
   });
 }
 
