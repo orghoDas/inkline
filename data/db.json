@@ -1,0 +1,113 @@
+{
+  "users": [
+    {
+      "id": "23ce82a6-17be-46bf-8e0f-92b650c71ee6",
+      "name": "Orgho Das",
+      "email": "mcguireon@gmail.com",
+      "bio": "Hello",
+      "emailVerified": false,
+      "role": "admin",
+      "salt": "a975ac0d2eacdb45e7d59b14bf393508",
+      "passwordHash": "dc097b1b1f72ff38c9e9bbbe0effe77582311471bb0d2994bb0e9dd08ee5201413fcf51c30d0be2cf554f4b711271676bfc42648ba9bc5da43b317eb4929a730",
+      "createdAt": "2026-05-21T04:46:43.990Z",
+      "emailVerificationHash": "2884465f96a5cc18ca850ed767404bb712bf6b15f21a11ccca8f9817a07ed1a3",
+      "emailVerificationExpiresAt": "2026-05-22T04:46:43.990Z"
+    }
+  ],
+  "sessions": [
+    {
+      "id": "698859f1-6e40-472d-90e7-9721f68ab334",
+      "userId": "23ce82a6-17be-46bf-8e0f-92b650c71ee6",
+      "createdAt": "2026-05-21T04:46:43.991Z"
+    }
+  ],
+  "stories": [
+    {
+      "status": "published",
+      "slug": "the-quiet-work-behind-a-design-system-that-actually-ships",
+      "id": "starter-design-systems",
+      "title": "The quiet work behind a design system that actually ships",
+      "excerpt": "A practical look at tokens, habits, and the small agreements that keep interfaces consistent.",
+      "authorId": null,
+      "authorName": "Maya Chen",
+      "authorBio": "Product designer writing about systems, habits, and the craft behind durable interfaces.",
+      "topic": "Design",
+      "image": "https://images.unsplash.com/photo-1497366754035-f200968a6e72?auto=format&fit=crop&w=900&q=80",
+      "bodyHtml": "<p>A design system is not just a sticker sheet or a component library. It is a shared memory for product decisions. The visible parts matter, but the invisible rituals matter more.</p><p>Teams usually discover this when the buttons are perfect and the experience still feels scattered. The missing piece is often agreement. Which choices should be flexible, and which should be boring on purpose?</p><p>Start with the workflows people repeat every day. Name the decisions, remove the tedious ones, and write down the exceptions. That is how a system earns trust without becoming a museum.</p>",
+      "minutes": 7,
+      "createdAt": "2026-05-03T04:00:00.000Z",
+      "updatedAt": "2026-05-03T04:00:00.000Z",
+      "searchText": "the quiet work behind a design system that actually ships a practical look at tokens, habits, and the small agreements that keep interfaces consistent. design maya chen product designer writing about systems, habits, and the craft behind durable interfaces. a design system is not just a sticker sheet or a component library. it is a shared memory for product decisions. the visible parts matter, but the invisible rituals matter more. teams usually discover this when the buttons are perfect and the experience still feels scattered. the missing piece is often agreement. which choices should be flexible, and which should be boring on purpose? start with the workflows people repeat every day. name the decisions, remove the tedious ones, and write down the exceptions. that is how a system earns trust without becoming a museum."
+    },
+    {
+      "status": "published",
+      "slug": "debugging-is-easier-when-you-write-down-what-you-know",
+      "id": "starter-debugging",
+      "title": "Debugging is easier when you write down what you know",
+      "excerpt": "The fastest engineers are often the ones who slow down for two minutes before changing code.",
+      "authorId": null,
+      "authorName": "Noah Patel",
+      "authorBio": "Software engineer interested in clear code, debugging rituals, and learning in public.",
+      "topic": "Code",
+      "image": "https://images.unsplash.com/photo-1515879218367-8466d910aaa4?auto=format&fit=crop&w=900&q=80",
+      "bodyHtml": "<p>Good debugging starts before the first fix. Write the symptom, the expected behavior, and the smallest reproduction you can describe. The act of naming the problem removes a surprising amount of fog.</p><p>Then change one thing at a time. This sounds slow, but it protects the signal. When the behavior changes, you know which move mattered.</p><blockquote>A bug is not an insult from the codebase. It is a sentence with one missing clause.</blockquote><p>Your job is to find the clause.</p>",
+      "minutes": 5,
+      "createdAt": "2026-05-02T04:00:00.000Z",
+      "updatedAt": "2026-05-02T04:00:00.000Z",
+      "searchText": "debugging is easier when you write down what you know the fastest engineers are often the ones who slow down for two minutes before changing code. code noah patel software engineer interested in clear code, debugging rituals, and learning in public. good debugging starts before the first fix. write the symptom, the expected behavior, and the smallest reproduction you can describe. the act of naming the problem removes a surprising amount of fog. then change one thing at a time. this sounds slow, but it protects the signal. when the behavior changes, you know which move mattered. a bug is not an insult from the codebase. it is a sentence with one missing clause. your job is to find the clause."
+    },
+    {
+      "status": "published",
+      "slug": "what-long-walks-taught-me-about-attention",
+      "id": "starter-attention",
+      "title": "What long walks taught me about attention",
+      "excerpt": "A small essay about making room for better thoughts in a noisy week.",
+      "authorId": null,
+      "authorName": "Elena Torres",
+      "authorBio": "Essayist exploring attention, routine, and the quieter parts of a creative life.",
+      "topic": "Life",
+      "image": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=900&q=80",
+      "bodyHtml": "<p>The first ten minutes of a walk are usually just static. Errands, old conversations, half-finished messages. Then the mind starts to loosen its grip.</p><p>Attention is not only something you spend. It is something you recover. A quiet route, a regular pace, and no urgent input can make the day feel less crowded.</p><p>I come back with fewer grand answers than I expect, but more usable ones. That is enough.</p>",
+      "minutes": 4,
+      "createdAt": "2026-04-30T04:00:00.000Z",
+      "updatedAt": "2026-04-30T04:00:00.000Z",
+      "searchText": "what long walks taught me about attention a small essay about making room for better thoughts in a noisy week. life elena torres essayist exploring attention, routine, and the quieter parts of a creative life. the first ten minutes of a walk are usually just static. errands, old conversations, half-finished messages. then the mind starts to loosen its grip. attention is not only something you spend. it is something you recover. a quiet route, a regular pace, and no urgent input can make the day feel less crowded. i come back with fewer grand answers than i expect, but more usable ones. that is enough."
+    },
+    {
+      "status": "published",
+      "slug": "a-first-draft-is-a-place-to-collect-courage",
+      "id": "starter-writing",
+      "title": "A first draft is a place to collect courage",
+      "excerpt": "Notes on writing before you feel ready, especially when the blank page is louder than usual.",
+      "authorId": null,
+      "authorName": "Samira Hale",
+      "authorBio": "Editor and writing coach focused on early drafts, revision, and creative confidence.",
+      "topic": "Writing",
+      "image": "https://images.unsplash.com/photo-1455390582262-044cdead277a?auto=format&fit=crop&w=900&q=80",
+      "bodyHtml": "<p>The first draft does not need to be persuasive. It needs to exist. Once the idea is visible, you can argue with it, sharpen it, or forgive it.</p><h2>Let the draft be early</h2><p>Most stuck writing is secretly a quality problem arriving too early. Drafting and editing use different muscles. Let the first one be messy enough to finish.</p><p>A page with a rough paragraph has already done something kind for the next version.</p>",
+      "minutes": 6,
+      "createdAt": "2026-04-27T04:00:00.000Z",
+      "updatedAt": "2026-04-27T04:00:00.000Z",
+      "searchText": "a first draft is a place to collect courage notes on writing before you feel ready, especially when the blank page is louder than usual. writing samira hale editor and writing coach focused on early drafts, revision, and creative confidence. the first draft does not need to be persuasive. it needs to exist. once the idea is visible, you can argue with it, sharpen it, or forgive it. let the draft be early most stuck writing is secretly a quality problem arriving too early. drafting and editing use different muscles. let the first one be messy enough to finish. a page with a rough paragraph has already done something kind for the next version."
+    }
+  ],
+  "bookmarks": [],
+  "claps": {},
+  "responses": [],
+  "devEmails": [
+    {
+      "id": "788af7cc-94df-4f1b-96b0-28f77e276c2e",
+      "createdAt": "2026-05-21T04:46:43.991Z",
+      "type": "verify-email",
+      "to": "mcguireon@gmail.com",
+      "subject": "Verify your Inkline email",
+      "link": "http://127.0.0.1:4173/?verify=85dc7180428c668f2c3b2a3c9aeb164731aaa37a289ea622ac547cc3c1ee3f16",
+      "delivery": "dev-fallback"
+    }
+  ],
+  "schemaVersion": 2,
+  "migrations": [
+    "2026-05-21-production-features"
+  ],
+  "uploads": []
+}

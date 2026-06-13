@@ -1,0 +1,31 @@
+{
+  "name": "inkline-medium-clone",
+  "version": "0.2.0",
+  "private": true,
+  "description": "A learning-friendly Medium-style writing app with a tiny Node backend.",
+  "scripts": {
+    "postinstall": "prisma generate",
+    "start": "node server.js",
+    "migrate": "prisma generate && prisma migrate deploy && node server.js --seed",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev --name init_postgres",
+    "db:seed": "node server.js --seed",
+    "db:import-json": "node server.js --import-json",
+    "db:studio": "prisma studio",
+    "neon:status": "node scripts/neon.js status",
+    "neon:migrate": "node scripts/neon.js migrate",
+    "neon:import-json": "node scripts/neon.js import-json",
+    "start:neon": "node scripts/neon.js start",
+    "test": "node --test test/*.test.js",
+    "check": "node --check server.js && node --check app.js && prisma validate"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "^7.8.0",
+    "@prisma/client": "^7.8.0",
+    "dotenv": "^17.4.2",
+    "pg": "^8.21.0"
+  },
+  "devDependencies": {
+    "prisma": "^7.8.0"
+  }
+}

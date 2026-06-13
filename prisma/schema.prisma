@@ -1,0 +1,117 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id                         String     @id
+  name                       String
+  email                      String     @unique
+  bio                        String
+  emailVerified              Boolean    @default(false)
+  role                       String     @default("user")
+  salt                       String
+  passwordHash               String
+  createdAt                  DateTime   @default(now())
+  emailVerificationHash      String?
+  emailVerificationExpiresAt DateTime?
+  resetTokenHash             String?
+  resetTokenExpiresAt        DateTime?
+  sessions                   Session[]
+  stories                    Story[]
+  responses                  Response[]
+  uploads                    Upload[]
+  bookmarks                  Bookmark[]
+  moderatedResponses         Response[] @relation("ResponseModerator")
+}
+
+model Session {
+  id        String   @id
+  userId    String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Story {
+  id             String     @id
+  status         String     @default("published")
+  slug           String
+  title          String
+  excerpt        String
+  authorId       String?
+  authorName     String
+  authorBio      String
+  topic          String
+  image          String
+  bodyHtml       String
+  minutes        Int
+  searchText     String
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @default(now())
+  author         User?      @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  responses      Response[]
+  bookmarks      Bookmark[]
+  clap           Clap?
+
+  @@index([status, createdAt])
+  @@index([authorId, status])
+}
+
+model Bookmark {
+  userId    String
+  storyId   String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  story     Story    @relation(fields: [storyId], references: [id], onDelete: Cascade)
+
+  @@id([userId, storyId])
+}
+
+model Clap {
+  storyId String @id
+  count   Int    @default(0)
+  story   Story  @relation(fields: [storyId], references: [id], onDelete: Cascade)
+}
+
+model Response {
+  id          String    @id
+  storyId     String
+  userId      String?
+  name        String
+  text        String
+  status      String    @default("visible")
+  createdAt   DateTime  @default(now())
+  moderatedAt DateTime?
+  moderatedBy String?
+  story       Story     @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  moderator   User?     @relation("ResponseModerator", fields: [moderatedBy], references: [id], onDelete: SetNull)
+
+  @@index([storyId, createdAt])
+  @@index([status, createdAt])
+}
+
+model Upload {
+  id           String   @id
+  url          String   @unique
+  fileName     String   @unique
+  originalName String?
+  mimeType     String
+  size         Int
+  userId       String?
+  createdAt    DateTime @default(now())
+  user         User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+}
+
+model DevEmail {
+  id        String   @id
+  createdAt DateTime @default(now())
+  type      String
+  to        String
+  subject   String
+  link      String
+  delivery  String
+}
