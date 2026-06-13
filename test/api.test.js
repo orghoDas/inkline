@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const { execFileSync, spawn } = require("node:child_process");
 const fs = require("node:fs/promises");
+const http = require("node:http");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
@@ -21,7 +22,11 @@ let databaseUrl;
 let createdDatabaseName;
 let serverProcess;
 let serverOutput = "";
+let storageServer;
+let storageBaseUrl;
 const uploadedFiles = new Set();
+const storageObjects = new Map();
+const storageRequests = [];
 
 function run(command, args, env = {}) {
   try {
@@ -61,6 +66,84 @@ async function getFreePort() {
   return port;
 }
 
+async function readRequestBuffer(req) {
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function startFakeSupabaseStorage() {
+  const port = await getFreePort();
+  storageBaseUrl = `http://127.0.0.1:${port}`;
+  storageServer = http.createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, storageBaseUrl);
+      const uploadPrefix = "/storage/v1/object/inkline-test/";
+      const publicPrefix = "/storage/v1/object/public/inkline-test/";
+
+      if (req.method === "POST" && url.pathname.startsWith(uploadPrefix)) {
+        assert.equal(req.headers.authorization, "Bearer test-service-key");
+        assert.equal(req.headers.apikey, "test-service-key");
+
+        const objectPath = decodeURIComponent(url.pathname.slice(uploadPrefix.length));
+        const buffer = await readRequestBuffer(req);
+        storageRequests.push({
+          method: req.method,
+          objectPath,
+          contentType: req.headers["content-type"],
+          size: buffer.length
+        });
+        storageObjects.set(objectPath, {
+          buffer,
+          contentType: req.headers["content-type"]
+        });
+
+        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ Key: `inkline-test/${objectPath}` }));
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname.startsWith(publicPrefix)) {
+        const objectPath = decodeURIComponent(url.pathname.slice(publicPrefix.length));
+        const object = storageObjects.get(objectPath);
+        if (!object) {
+          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Not found");
+          return;
+        }
+
+        res.writeHead(200, {
+          "Content-Type": object.contentType,
+          "Cache-Control": "public, max-age=31536000, immutable"
+        });
+        res.end(object.buffer);
+        return;
+      }
+
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Not found");
+    } catch (error) {
+      res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end(error.message);
+    }
+  });
+
+  await new Promise((resolve, reject) => {
+    storageServer.once("error", reject);
+    storageServer.listen(port, "127.0.0.1", resolve);
+  });
+}
+
+async function stopFakeSupabaseStorage() {
+  if (!storageServer) return;
+  await new Promise((resolve, reject) => {
+    storageServer.close((error) => (error ? reject(error) : resolve()));
+  });
+  storageServer = null;
+}
+
 function makeDatabaseUrl(databaseName) {
   return `postgresql://${encodeURIComponent(os.userInfo().username)}@localhost:5432/${databaseName}`;
 }
@@ -98,6 +181,11 @@ async function startServer() {
       PORT: String(port),
       RESPONSE_RATE_LIMIT_MAX: "1",
       RESPONSE_RATE_LIMIT_WINDOW_MS: "60000",
+      STORAGE_PROVIDER: "supabase",
+      SUPABASE_SERVICE_ROLE_KEY: "test-service-key",
+      SUPABASE_STORAGE_BUCKET: "inkline-test",
+      SUPABASE_STORAGE_PATH_PREFIX: "story-covers",
+      SUPABASE_URL: storageBaseUrl,
       UPLOAD_RATE_LIMIT_MAX: "1",
       UPLOAD_RATE_LIMIT_WINDOW_MS: "60000"
     },
@@ -211,7 +299,8 @@ class ApiClient {
     const cookie = this.cookieHeader();
     if (cookie) headers.Cookie = cookie;
 
-    const response = await fetch(`${baseUrl}${urlPath}`, {
+    const targetUrl = /^https?:\/\//i.test(urlPath) ? urlPath : `${baseUrl}${urlPath}`;
+    const response = await fetch(targetUrl, {
       ...options,
       headers
     });
@@ -252,11 +341,13 @@ function apiClientWithIp(ip) {
 
 test.before(async () => {
   await prepareDatabase();
+  await startFakeSupabaseStorage();
   await startServer();
 });
 
 test.after(async () => {
   await stopServer();
+  await stopFakeSupabaseStorage();
   await cleanupUploads();
   await dropDatabase();
 });
@@ -366,8 +457,13 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
     }),
     201
   );
-  assert.match(upload.url, /^\/uploads\/.+\.png$/);
+  assert.ok(upload.url.startsWith(`${storageBaseUrl}/storage/v1/object/public/inkline-test/story-covers/`));
+  assert.match(upload.url, /\.png$/);
   trackUpload(upload.url);
+  assert.equal(storageRequests.length, 1);
+  assert.match(storageRequests[0].objectPath, /^story-covers\/.+\/.+\.png$/);
+  assert.equal(storageRequests[0].contentType, "image/png");
+  assert.ok(storageRequests[0].size > 0);
 
   const uploadedImage = await admin.request(upload.url);
   assert.equal(uploadedImage.response.status, 200);
@@ -381,6 +477,7 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
   assert.equal(uploadLimited.payload.error, "Too many uploads. Please wait before uploading another image.");
   assert.equal(uploadLimited.response.headers.get("x-ratelimit-limit"), "1");
   assert.ok(uploadLimited.response.headers.get("retry-after"));
+  assert.equal(storageRequests.length, 1);
 
   const draft = await expectStatus(
     admin.json("POST", "/api/stories", {

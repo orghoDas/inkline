@@ -16,6 +16,12 @@ const JSON_LIMIT = 8 * 1024 * 1024;
 const UPLOAD_LIMIT = 5 * 1024 * 1024;
 const EMAIL_PROVIDER = process.env.EMAIL_PROVIDER ?? (process.env.RESEND_API_KEY ? "resend" : "dev");
 const EMAIL_FROM = process.env.EMAIL_FROM ?? "Inkline <onboarding@resend.dev>";
+const STORAGE_PROVIDER = String(process.env.STORAGE_PROVIDER ?? "local").trim().toLowerCase();
+const SUPABASE_URL = String(process.env.SUPABASE_URL ?? "").trim().replace(/\/+$/, "");
+const SUPABASE_SERVICE_ROLE_KEY = String(process.env.SUPABASE_SERVICE_ROLE_KEY ?? "").trim();
+const SUPABASE_STORAGE_BUCKET = String(process.env.SUPABASE_STORAGE_BUCKET ?? "inkline-uploads").trim();
+const SUPABASE_STORAGE_PATH_PREFIX = String(process.env.SUPABASE_STORAGE_PATH_PREFIX ?? "story-covers").trim();
+const SUPABASE_PUBLIC_URL = String(process.env.SUPABASE_PUBLIC_URL ?? "").trim().replace(/\/+$/, "");
 const ADMIN_EMAILS = new Set(
   String(process.env.ADMIN_EMAILS ?? "")
     .split(",")
@@ -57,6 +63,10 @@ const RATE_LIMITED_AUTH_PATHS = new Set([
   "/api/auth/request-reset",
   "/api/auth/reset-password"
 ]);
+
+if (!["local", "supabase"].includes(STORAGE_PROVIDER)) {
+  throw new Error("STORAGE_PROVIDER must be either local or supabase.");
+}
 
 const seedStories = [
   {
@@ -434,20 +444,98 @@ function parseDataUrl(dataUrl) {
   };
 }
 
-async function saveImageUploadPrisma(body, user) {
-  const parsed = parseDataUrl(body.dataUrl);
-  const id = crypto.randomUUID();
-  const fileName = `${id}.${parsed.ext}`;
+function encodeStoragePath(value) {
+  return String(value)
+    .split("/")
+    .filter(Boolean)
+    .map(encodeURIComponent)
+    .join("/");
+}
+
+function normalizeStoragePrefix(value) {
+  return String(value ?? "")
+    .split("/")
+    .map((part) => slugify(part))
+    .filter(Boolean)
+    .join("/");
+}
+
+function supabaseStorageConfig() {
+  const missing = [];
+  if (!SUPABASE_URL) missing.push("SUPABASE_URL");
+  if (!SUPABASE_SERVICE_ROLE_KEY) missing.push("SUPABASE_SERVICE_ROLE_KEY");
+  if (!SUPABASE_STORAGE_BUCKET) missing.push("SUPABASE_STORAGE_BUCKET");
+
+  if (missing.length > 0) {
+    throw new HttpError(500, `Supabase Storage is missing ${missing.join(", ")}.`);
+  }
+
+  return {
+    url: SUPABASE_URL,
+    key: SUPABASE_SERVICE_ROLE_KEY,
+    bucket: SUPABASE_STORAGE_BUCKET,
+    prefix: normalizeStoragePrefix(SUPABASE_STORAGE_PATH_PREFIX) || "story-covers",
+    publicUrl: SUPABASE_PUBLIC_URL
+  };
+}
+
+async function saveLocalImageUpload(parsed, fileName) {
   const filePath = path.join(UPLOAD_DIR, fileName);
   const publicPath = `/uploads/${fileName}`;
 
   await fs.mkdir(UPLOAD_DIR, { recursive: true });
   await fs.writeFile(filePath, parsed.buffer);
+
+  return {
+    url: publicPath,
+    fileName
+  };
+}
+
+async function saveSupabaseImageUpload(parsed, user, fileName) {
+  const config = supabaseStorageConfig();
+  const objectPath = `${config.prefix}/${user.id}/${fileName}`;
+  const encodedBucket = encodeURIComponent(config.bucket);
+  const encodedPath = encodeStoragePath(objectPath);
+  const uploadUrl = `${config.url}/storage/v1/object/${encodedBucket}/${encodedPath}`;
+  const response = await fetch(uploadUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${config.key}`,
+      apikey: config.key,
+      "Cache-Control": "31536000",
+      "Content-Type": parsed.mimeType,
+      "x-upsert": "false"
+    },
+    body: parsed.buffer
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new HttpError(502, `Could not save image to Supabase Storage. ${text.slice(0, 160)}`.trim());
+  }
+
+  const publicBaseUrl = config.publicUrl || `${config.url}/storage/v1/object/public/${encodedBucket}`;
+  return {
+    url: `${publicBaseUrl}/${encodedPath}`,
+    fileName: objectPath
+  };
+}
+
+async function saveImageUploadPrisma(body, user) {
+  const parsed = parseDataUrl(body.dataUrl);
+  const id = crypto.randomUUID();
+  const fileName = `${id}.${parsed.ext}`;
+  const savedImage =
+    STORAGE_PROVIDER === "supabase"
+      ? await saveSupabaseImageUpload(parsed, user, fileName)
+      : await saveLocalImageUpload(parsed, fileName);
+
   await getPrisma().upload.create({
     data: {
       id,
-      url: publicPath,
-      fileName,
+      url: savedImage.url,
+      fileName: savedImage.fileName,
       originalName: normalizeText(body.fileName, 160),
       mimeType: parsed.mimeType,
       size: parsed.buffer.length,
@@ -456,7 +544,7 @@ async function saveImageUploadPrisma(body, user) {
     }
   });
 
-  return publicPath;
+  return savedImage.url;
 }
 
 class HttpError extends Error {

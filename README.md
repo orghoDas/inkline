@@ -12,7 +12,7 @@ Inkline is a small Medium-style writing app built for learning. It has a vanilla
 - Draft saving before publishing.
 - Paginated feed loading.
 - A contenteditable rich text editor with bold, italic, headings, quotes, lists, and links.
-- Cover image URLs and local cover image uploads stored under `/uploads`.
+- Cover image URLs plus local or Supabase Storage uploads.
 - Claps, bookmarks, and reader responses.
 - Response deletion by the response author or story author.
 - Response hiding/showing by story authors and admins.
@@ -86,6 +86,20 @@ npm run neon:status
 NEON_ENV_FILE=.env.neon-preview npm run neon:migrate
 ```
 
+## Image storage
+
+Uploads use local disk by default and are served from `/uploads`. To move uploaded cover images to Supabase Storage, create a public bucket such as `inkline-uploads`, then set these server-side environment variables:
+
+```env
+STORAGE_PROVIDER=supabase
+SUPABASE_URL="https://YOUR_PROJECT_REF.supabase.co"
+SUPABASE_SERVICE_ROLE_KEY="your_server_only_service_role_key"
+SUPABASE_STORAGE_BUCKET=inkline-uploads
+SUPABASE_STORAGE_PATH_PREFIX=story-covers
+```
+
+`SUPABASE_SERVICE_ROLE_KEY` must stay on the server and must not be exposed in browser code or committed to Git. `SUPABASE_PUBLIC_URL` is optional if you later front the bucket with a custom CDN/public base URL.
+
 ## Run it
 
 ```bash
@@ -126,11 +140,11 @@ npm run db:studio
 - `index.html` holds the page structure and dialogs.
 - `styles.css` controls layout, responsive behavior, editor styling, and dialog styling.
 - `app.js` holds frontend state, rendering, routing, and API calls.
-- `server.js` holds the HTTP server, API routes, sanitization, direct Prisma story/auth/comment/upload/profile/admin flows, and the JSON import path for old local data.
+- `server.js` holds the HTTP server, API routes, sanitization, direct Prisma story/auth/comment/upload/profile/admin flows, image storage adapters, and the JSON import path for old local data.
 - `prisma/schema.prisma` defines the Postgres tables and relationships.
 - `prisma/migrations/` contains SQL migrations generated from the Prisma schema.
 - `data/db.json` is now legacy local data that can be imported with `npm run db:import-json`.
-- `uploads/` is created automatically when a user uploads an image.
+- `uploads/` is created automatically when local image storage is enabled.
 
 ## API map
 
@@ -200,12 +214,13 @@ Auth limits are keyed by client IP. Upload and response limits are keyed by sign
 9. Read `importJsonDatabase()` and `writeDb()` in `server.js` to understand how old `data/db.json` records are imported into Postgres tables.
 10. Read `findPublishedStoryIdsBySearch()` and the full-text search migration to see how Postgres ranks matching stories.
 11. Read `applyRateLimit()` to see how fixed-window rate limiting protects auth, uploads, and responses.
-12. Read `test/api.test.js` to see how the auth, story, upload, response, and moderation flows can be tested through HTTP.
-13. Read `validateStoryInput()` to see how drafts and published stories use different validation rules.
-14. Use `npm run db:studio` to inspect the database visually while you create stories in the app.
+12. Read `saveLocalImageUpload()` and `saveSupabaseImageUpload()` to see how upload storage is swapped by environment.
+13. Read `test/api.test.js` to see how the auth, story, upload, response, and moderation flows can be tested through HTTP.
+14. Read `validateStoryInput()` to see how drafts and published stories use different validation rules.
+15. Use `npm run db:studio` to inspect the database visually while you create stories in the app.
 
 ## Next useful features
 
-- Move uploaded images to Supabase Storage, S3, or another object store.
+- Add storage cleanup for deleted stories and replaced cover images.
 - Add browser-level tests for the writing and reading UI.
 - Add CI so `npm test` and `npm run check` run before deployment.
