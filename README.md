@@ -225,6 +225,6 @@ Auth limits are keyed by client IP. Upload and response limits are keyed by sign
 
 ## Next useful features
 
-- Add storage cleanup for deleted stories and replaced cover images.
 - Add browser-level tests for the writing and reading UI.
+- Add real email delivery setup docs and production verification checklist.
 - Add deploy docs for a hosted Node runtime.

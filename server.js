@@ -522,6 +522,53 @@ async function saveSupabaseImageUpload(parsed, user, fileName) {
   };
 }
 
+async function deleteLocalImageUpload(upload) {
+  if (!upload.url.startsWith("/uploads/")) return;
+  const filePath = path.join(UPLOAD_DIR, path.basename(upload.url));
+  await fs.rm(filePath, { force: true });
+}
+
+async function deleteSupabaseImageUpload(upload) {
+  const config = supabaseStorageConfig();
+  const encodedBucket = encodeURIComponent(config.bucket);
+  const encodedPath = encodeStoragePath(upload.fileName);
+  const deleteUrl = `${config.url}/storage/v1/object/${encodedBucket}/${encodedPath}`;
+  const response = await fetch(deleteUrl, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${config.key}`,
+      apikey: config.key
+    }
+  });
+
+  if (!response.ok && response.status !== 404) {
+    const text = await response.text();
+    console.warn(`Could not delete stored image ${upload.fileName}: ${text.slice(0, 160)}`);
+  }
+}
+
+async function deleteStoredImageIfOwned(url) {
+  const upload = await getPrisma().upload.findUnique({
+    where: { url }
+  });
+
+  if (!upload) return;
+
+  try {
+    if (STORAGE_PROVIDER === "supabase") {
+      await deleteSupabaseImageUpload(upload);
+    } else {
+      await deleteLocalImageUpload(upload);
+    }
+
+    await getPrisma().upload.delete({
+      where: { id: upload.id }
+    });
+  } catch (error) {
+    console.warn(`Could not clean up stored image ${upload.fileName}:`, error);
+  }
+}
+
 async function saveImageUploadPrisma(body, user) {
   const parsed = parseDataUrl(body.dataUrl);
   const id = crypto.randomUUID();
@@ -1218,6 +1265,9 @@ async function handleUpdateStoryPrisma(req, res, storyId) {
     },
     include: storyPrismaInclude(signedInUser, { includeResponses: true })
   });
+  if (story.image && story.image !== storyInput.image) {
+    await deleteStoredImageIfOwned(story.image);
+  }
 
   return sendJson(res, 200, { story: publicStoryFromPrisma(updatedStory, signedInUser, { includeResponses: true }) });
 }
@@ -1232,6 +1282,7 @@ async function handleDeleteStoryPrisma(req, res, storyId) {
   await getPrisma().story.delete({
     where: { id: story.id }
   });
+  await deleteStoredImageIfOwned(story.image);
 
   return sendJson(res, 200, { ok: true });
 }
@@ -1741,6 +1792,7 @@ async function handleAdminDeleteStoryPrisma(req, res, storyId) {
   await getPrisma().story.delete({
     where: { id: story.id }
   });
+  await deleteStoredImageIfOwned(story.image);
 
   return sendJson(res, 200, { ok: true });
 }

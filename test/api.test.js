@@ -105,6 +105,22 @@ async function startFakeSupabaseStorage() {
         return;
       }
 
+      if (req.method === "DELETE" && url.pathname.startsWith(uploadPrefix)) {
+        assert.equal(req.headers.authorization, "Bearer test-service-key");
+        assert.equal(req.headers.apikey, "test-service-key");
+
+        const objectPath = decodeURIComponent(url.pathname.slice(uploadPrefix.length));
+        storageRequests.push({
+          method: req.method,
+          objectPath
+        });
+        storageObjects.delete(objectPath);
+
+        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+
       if (req.method === "GET" && url.pathname.startsWith(publicPrefix)) {
         const objectPath = decodeURIComponent(url.pathname.slice(publicPrefix.length));
         const object = storageObjects.get(objectPath);
@@ -186,7 +202,7 @@ async function startServer() {
       SUPABASE_STORAGE_BUCKET: "inkline-test",
       SUPABASE_STORAGE_PATH_PREFIX: "story-covers",
       SUPABASE_URL: storageBaseUrl,
-      UPLOAD_RATE_LIMIT_MAX: "1",
+      UPLOAD_RATE_LIMIT_MAX: "2",
       UPLOAD_RATE_LIMIT_WINDOW_MS: "60000"
     },
     stdio: ["ignore", "pipe", "pipe"]
@@ -339,6 +355,11 @@ function apiClientWithIp(ip) {
   });
 }
 
+function latestStorageRequest(method) {
+  const matches = storageRequests.filter((request) => request.method === method);
+  return matches[matches.length - 1];
+}
+
 test.before(async () => {
   await prepareDatabase();
   await startFakeSupabaseStorage();
@@ -461,23 +482,37 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
   assert.match(upload.url, /\.png$/);
   trackUpload(upload.url);
   assert.equal(storageRequests.length, 1);
-  assert.match(storageRequests[0].objectPath, /^story-covers\/.+\/.+\.png$/);
+  const firstUploadedObject = storageRequests[0].objectPath;
+  assert.match(firstUploadedObject, /^story-covers\/.+\/.+\.png$/);
   assert.equal(storageRequests[0].contentType, "image/png");
   assert.ok(storageRequests[0].size > 0);
+  assert.equal(storageObjects.has(firstUploadedObject), true);
 
   const uploadedImage = await admin.request(upload.url);
   assert.equal(uploadedImage.response.status, 200);
   assert.equal(uploadedImage.response.headers.get("content-type"), "image/png");
 
+  const replacementUpload = await expectStatus(
+    admin.json("POST", "/api/uploads", {
+      fileName: "replacement-cover.png",
+      dataUrl: ONE_PIXEL_PNG
+    }),
+    201
+  );
+  assert.ok(replacementUpload.url.startsWith(`${storageBaseUrl}/storage/v1/object/public/inkline-test/story-covers/`));
+  const replacementUploadedObject = latestStorageRequest("POST").objectPath;
+  assert.notEqual(replacementUploadedObject, firstUploadedObject);
+  assert.equal(storageObjects.has(replacementUploadedObject), true);
+
   const uploadLimited = await admin.json("POST", "/api/uploads", {
-    fileName: "second-cover.png",
+    fileName: "third-cover.png",
     dataUrl: ONE_PIXEL_PNG
   });
   assert.equal(uploadLimited.response.status, 429);
   assert.equal(uploadLimited.payload.error, "Too many uploads. Please wait before uploading another image.");
-  assert.equal(uploadLimited.response.headers.get("x-ratelimit-limit"), "1");
+  assert.equal(uploadLimited.response.headers.get("x-ratelimit-limit"), "2");
   assert.ok(uploadLimited.response.headers.get("retry-after"));
-  assert.equal(storageRequests.length, 1);
+  assert.equal(storageRequests.filter((request) => request.method === "POST").length, 2);
 
   const draft = await expectStatus(
     admin.json("POST", "/api/stories", {
@@ -517,13 +552,16 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
       title: "Prisma API test story edited",
       excerpt: "An edited smoke test for the learning project.",
       topic: "Testing",
-      image: upload.url,
+      image: replacementUpload.url,
       bodyHtml: "<p>This edited story checks update behavior.</p>",
       status: "published"
     }),
     200
   );
   assert.equal(edited.story.slug, "prisma-api-test-story-edited");
+  assert.equal(latestStorageRequest("DELETE").objectPath, firstUploadedObject);
+  assert.equal(storageObjects.has(firstUploadedObject), false);
+  assert.equal(storageObjects.has(replacementUploadedObject), true);
 
   const updatedProfile = await expectStatus(
     admin.json("PUT", "/api/me", {
@@ -612,6 +650,8 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
   assert.equal(detailAfterResponseDelete.story.responses.length, 0);
 
   await expectStatus(admin.request(`/api/admin/stories/${encodePathPart(storyId)}`, { method: "DELETE" }), 200);
+  assert.equal(latestStorageRequest("DELETE").objectPath, replacementUploadedObject);
+  assert.equal(storageObjects.has(replacementUploadedObject), false);
   const deletedStory = await admin.request(`/api/stories/${encodePathPart(storyId)}`);
   assert.equal(deletedStory.response.status, 404);
 });
