@@ -16,8 +16,10 @@
     "neon:migrate": "node scripts/neon.js migrate",
     "neon:import-json": "node scripts/neon.js import-json",
     "start:neon": "node scripts/neon.js start",
-    "test": "node --test test/*.test.js",
-    "check": "node --check server.js && node --check app.js && prisma validate"
+    "test": "npm run test:api && npm run test:e2e",
+    "test:api": "node --test test/api.test.js",
+    "test:e2e": "playwright test",
+    "check": "node --check server.js && node --check app.js && node --check test/api.test.js && node --check playwright.config.js && node --check e2e/writing.spec.js && prisma validate"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.8.0",
@@ -26,6 +28,7 @@
     "pg": "^8.21.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "prisma": "^7.8.0"
   }
 }

@@ -23,6 +23,7 @@ Inkline is a small Medium-style writing app built for learning. It has a vanilla
 - Email verification and password reset flows using expiring single-use tokens plus an email delivery adapter.
 - In-memory fixed-window rate limiting for auth, uploads, and responses.
 - Postgres tables, Prisma schema, and Prisma migrations.
+- API and browser-level tests for the main publishing flow.
 
 ## Database setup
 
@@ -116,10 +117,31 @@ http://localhost:4173
 
 ## Test it
 
-The API test suite creates a temporary local Postgres database by default, applies Prisma migrations, starts the server on a random port, runs the main API flows, and drops the database afterward.
+The API test suite creates a temporary local Postgres database by default, applies Prisma migrations, starts the server on a random port, runs the main API flows, and drops the database afterward. The Playwright suite starts the app in a browser and clicks through sign up, writing, publishing, reading, responding, bookmarking, clapping, and editing.
+
+Install the Playwright browser once before running browser tests locally:
+
+```bash
+npx playwright install chromium
+```
+
+If that download is slow and you already have Google Chrome installed, run the browser suite with:
+
+```bash
+PLAYWRIGHT_USE_SYSTEM_CHROME=1 npm run test:e2e
+```
+
+Run all tests:
 
 ```bash
 npm test
+```
+
+Run only one layer:
+
+```bash
+npm run test:api
+npm run test:e2e
 ```
 
 Use `TEST_DATABASE_URL` if you want to point the tests at your own disposable database instead:
@@ -128,7 +150,7 @@ Use `TEST_DATABASE_URL` if you want to point the tests at your own disposable da
 TEST_DATABASE_URL="postgresql://YOUR_MAC_USER@localhost:5432/inkline_test" npm test
 ```
 
-GitHub Actions runs `npm run check` and `npm test` against Postgres on every push and pull request to `main`.
+GitHub Actions installs Chromium, then runs `npm run check` and `npm test` against Postgres on every push and pull request to `main`.
 
 Useful database commands:
 
@@ -220,11 +242,11 @@ Auth limits are keyed by client IP. Upload and response limits are keyed by sign
 11. Read `applyRateLimit()` to see how fixed-window rate limiting protects auth, uploads, and responses.
 12. Read `saveLocalImageUpload()` and `saveSupabaseImageUpload()` to see how upload storage is swapped by environment.
 13. Read `test/api.test.js` to see how the auth, story, upload, response, and moderation flows can be tested through HTTP.
-14. Read `validateStoryInput()` to see how drafts and published stories use different validation rules.
-15. Use `npm run db:studio` to inspect the database visually while you create stories in the app.
+14. Read `e2e/writing.spec.js` to see how Playwright tests the same flow through the browser UI.
+15. Read `validateStoryInput()` to see how drafts and published stories use different validation rules.
+16. Use `npm run db:studio` to inspect the database visually while you create stories in the app.
 
 ## Next useful features
 
-- Add browser-level tests for the writing and reading UI.
 - Add real email delivery setup docs and production verification checklist.
 - Add deploy docs for a hosted Node runtime.

@@ -49,5 +49,8 @@ jobs:
       - name: Check source and Prisma schema
         run: npm run check
 
-      - name: Run API tests
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run tests
         run: npm test
