@@ -14,6 +14,7 @@ const UPLOAD_DIR = path.join(ROOT, "uploads");
 const SESSION_COOKIE = "inkline_session";
 const JSON_LIMIT = 8 * 1024 * 1024;
 const UPLOAD_LIMIT = 5 * 1024 * 1024;
+const APP_URL = String(process.env.APP_URL ?? "").trim().replace(/\/+$/, "");
 const EMAIL_PROVIDER = process.env.EMAIL_PROVIDER ?? (process.env.RESEND_API_KEY ? "resend" : "dev");
 const EMAIL_FROM = process.env.EMAIL_FROM ?? "Inkline <onboarding@resend.dev>";
 const STORAGE_PROVIDER = String(process.env.STORAGE_PROVIDER ?? "local").trim().toLowerCase();
@@ -861,8 +862,21 @@ async function sendEmailPrisma(req, message) {
   };
 }
 
+function firstHeaderValue(value) {
+  const header = Array.isArray(value) ? value[0] : value;
+  return String(header ?? "")
+    .split(",")[0]
+    .trim();
+}
+
 function appOrigin(req) {
-  return `http://${req.headers.host}`;
+  if (APP_URL) return APP_URL;
+
+  const forwardedProto = firstHeaderValue(req.headers["x-forwarded-proto"]);
+  const forwardedHost = firstHeaderValue(req.headers["x-forwarded-host"]);
+  const protocol = forwardedProto === "https" ? "https" : "http";
+  const host = forwardedHost || req.headers.host;
+  return `${protocol}://${host}`;
 }
 
 function publicUser(user) {

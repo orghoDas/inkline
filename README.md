@@ -200,15 +200,33 @@ npm run db:studio
 - `DELETE /api/stories/:id/responses/:responseId`
 - `POST /api/stories/:id/responses/:responseId/moderate`
 
-## Dev email links
+## Email delivery
 
-Verification and reset links are generated with production-style token rules. By default, the app shows generated links in the UI during development. To send real email with Resend, set these environment variables before starting the server:
+Verification and reset links are generated with production-style token rules: random tokens, hashed storage, expiry times, and single use after success. By default, the app uses the development email adapter and shows generated links in the UI.
+
+For production delivery, Inkline can send through Resend's Email API. Resend expects a verified sending domain and sends messages through `POST /emails`; see the official [Send Email](https://resend.com/docs/api-reference/emails/send-email) and [Managing Domains](https://resend.com/docs/dashboard/domains/introduction) docs.
+
+Set these server-side environment variables before starting the server:
 
 ```bash
+APP_URL=https://your-inkline-domain.com
 EMAIL_PROVIDER=resend
 RESEND_API_KEY=your_resend_key
 EMAIL_FROM="Inkline <hello@yourdomain.com>"
 ```
+
+`APP_URL` is used inside verification and password reset links. Set it to the real HTTPS origin users will open in the browser. `RESEND_API_KEY` must stay on the server and must not be exposed in browser code or committed to Git.
+
+Production email setup checklist:
+
+- Add your sending domain in Resend and wait until the domain status is verified.
+- Use a sender address on that verified domain, such as `Inkline <hello@yourdomain.com>`.
+- Store `RESEND_API_KEY`, `EMAIL_PROVIDER=resend`, `EMAIL_FROM`, and `APP_URL` in the host's secret environment settings.
+- Register a test account and confirm the verification email arrives in the inbox.
+- Click the verification link and confirm the app marks the account as verified.
+- Request a password reset and confirm the reset link opens the app on the production domain.
+- Confirm Resend logs show the messages as accepted or delivered.
+- Confirm no production secrets are present in `.env`, `.env.neon`, shell history, screenshots, or committed files.
 
 Set `ADMIN_EMAILS` to a comma-separated list to make known accounts admins. The first registered user is also made an admin locally so you can reach the moderation tools.
 
@@ -248,5 +266,5 @@ Auth limits are keyed by client IP. Upload and response limits are keyed by sign
 
 ## Next useful features
 
-- Add real email delivery setup docs and production verification checklist.
 - Add deploy docs for a hosted Node runtime.
+- Add production diagnostics for failed email delivery and storage cleanup.

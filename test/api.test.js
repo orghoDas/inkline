@@ -188,6 +188,7 @@ async function startServer() {
     env: {
       ...process.env,
       ADMIN_EMAILS: adminEmail,
+      APP_URL: "https://inkline.example.test",
       AUTH_RATE_LIMIT_MAX: "10",
       AUTH_RATE_LIMIT_WINDOW_MS: "60000",
       DATABASE_URL: databaseUrl,
@@ -416,6 +417,7 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
   assert.equal(registered.user.isAdmin, true);
   assert.equal(registered.user.emailVerified, false);
   assert.equal(registered.devEmail.type, "verify-email");
+  assert.ok(registered.devEmail.link.startsWith("https://inkline.example.test/?verify="));
 
   const session = await expectStatus(admin.request("/api/session"), 200);
   assert.equal(session.user.email, adminEmail);
