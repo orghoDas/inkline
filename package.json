@@ -3,12 +3,17 @@
   "version": "0.2.0",
   "private": true,
   "description": "A learning-friendly Medium-style writing app with a tiny Node backend.",
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "postinstall": "prisma generate",
     "start": "node server.js",
+    "start:prod": "npm run db:deploy && node server.js",
     "migrate": "prisma generate && prisma migrate deploy && node server.js --seed",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev --name init_postgres",
+    "db:deploy": "prisma migrate deploy",
     "db:seed": "node server.js --seed",
     "db:import-json": "node server.js --import-json",
     "db:studio": "prisma studio",

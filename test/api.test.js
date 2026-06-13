@@ -380,6 +380,10 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
   assert.equal(notFound.response.status, 404);
   assert.equal(notFound.payload.error, "Route not found.");
 
+  const health = await guest.request("/healthz");
+  assert.equal(health.response.status, 200);
+  assert.equal(health.payload.ok, true);
+
   const initialFeed = await expectStatus(guest.request("/api/stories?limit=10"), 200);
   assert.ok(Array.isArray(initialFeed.stories));
   if (createdDatabaseName) {

@@ -2003,6 +2003,12 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
   try {
+    if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/healthz") {
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(req.method === "HEAD" ? undefined : JSON.stringify({ ok: true }));
+      return;
+    }
+
     if (url.pathname.startsWith("/api/")) {
       await handleApi(req, res, url);
       return;

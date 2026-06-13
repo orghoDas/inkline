@@ -115,6 +115,73 @@ Then open:
 http://localhost:4173
 ```
 
+## Deploy it
+
+Inkline deploys as one hosted Node web service connected to managed Postgres, image storage, and email delivery. The current production-friendly path is:
+
+- Neon for `DATABASE_URL` and `DIRECT_URL`.
+- Supabase Storage for uploaded cover images.
+- Resend for email verification and password reset delivery.
+- A Node host such as Render, Railway, or Fly.io.
+
+Hosted Node settings:
+
+```text
+Node version: 24.x
+Build command: npm ci
+Migration command: npm run db:deploy
+Start command: npm start
+Fallback start command: npm run start:prod
+Health check path: /healthz
+```
+
+Use `npm run db:deploy` as a separate release, pre-deploy, or migration command when your host supports one. If your host only gives you a build command and a start command, use `npm run start:prod` for a small single-instance learning deployment; it applies Prisma migrations before starting the server.
+
+Set these environment variables in the host's secret variable UI, not in committed files:
+
+```env
+NODE_ENV=production
+HOST=0.0.0.0
+APP_URL=https://your-inkline-domain.com
+
+DATABASE_URL="your pooled Neon connection string"
+DIRECT_URL="your direct Neon connection string"
+
+STORAGE_PROVIDER=supabase
+SUPABASE_URL="https://YOUR_PROJECT_REF.supabase.co"
+SUPABASE_SERVICE_ROLE_KEY="your_server_only_service_role_key"
+SUPABASE_STORAGE_BUCKET=inkline-uploads
+SUPABASE_STORAGE_PATH_PREFIX=story-covers
+
+EMAIL_PROVIDER=resend
+RESEND_API_KEY=your_resend_key
+EMAIL_FROM="Inkline <hello@yourdomain.com>"
+ADMIN_EMAILS=you@yourdomain.com
+```
+
+Most hosts inject `PORT` automatically, so do not hard-code it unless the host asks you to. Keep `HOST=0.0.0.0` in production so the platform proxy can reach the Node process. Use Supabase Storage in production because local uploaded files are not durable on many hosted runtimes.
+
+Platform notes:
+
+- Render: create a Web Service from the GitHub repo. Render's [Node guide](https://render.com/docs/deploy-node-express-app) uses build and start commands, and Render's [deploy docs](https://render.com/docs/deploys) describe pre-deploy commands for tasks like database migrations. Use `npm ci`, `npm run db:deploy`, and `npm start` when pre-deploy is available; otherwise use `npm run start:prod`.
+- Railway: add variables from the service's [Variables](https://docs.railway.com/variables) tab or RAW editor, then deploy from the GitHub repo. Use the same hosted Node settings above.
+- Fly.io: make sure the app listens on `0.0.0.0` and that Fly's internal port matches the app's `PORT`. Fly's [troubleshooting docs](https://fly.io/docs/getting-started/troubleshooting/) call this out as a common cause of unreachable deployments.
+
+Production smoke test:
+
+```bash
+curl https://your-inkline-domain.com/healthz
+```
+
+Then open the app in the browser and check:
+
+- Register a new account and verify the email link.
+- Publish a story with an uploaded cover image.
+- Reload the dedicated story URL.
+- Add a response, clap, and bookmark.
+- Request a password reset and confirm the reset link uses `APP_URL`.
+- Confirm the host logs do not show migration, email, storage, or Prisma errors.
+
 ## Test it
 
 The API test suite creates a temporary local Postgres database by default, applies Prisma migrations, starts the server on a random port, runs the main API flows, and drops the database afterward. The Playwright suite starts the app in a browser and clicks through sign up, writing, publishing, reading, responding, bookmarking, clapping, and editing.
@@ -157,6 +224,7 @@ Useful database commands:
 ```bash
 npm run db:generate
 npm run db:migrate
+npm run db:deploy
 npm run db:seed
 npm run db:studio
 ```
@@ -175,6 +243,7 @@ npm run db:studio
 ## API map
 
 - `GET /api/session`
+- `GET /healthz`
 - `POST /api/auth/register`
 - `POST /api/auth/login`
 - `POST /api/auth/logout`
@@ -266,5 +335,5 @@ Auth limits are keyed by client IP. Upload and response limits are keyed by sign
 
 ## Next useful features
 
-- Add deploy docs for a hosted Node runtime.
 - Add production diagnostics for failed email delivery and storage cleanup.
+- Add a Redis-backed rate limiter for multi-instance production deploys.
