@@ -2,7 +2,7 @@ const { execFileSync, spawn } = require("node:child_process");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
-const { expect, test } = require("@playwright/test");
+const { expect, request, test } = require("@playwright/test");
 
 const ROOT = path.resolve(__dirname, "..");
 const runId = `${Date.now()}-${process.pid}`;
@@ -178,6 +178,15 @@ test("writer can sign up, publish, read, and edit a story", async ({ page }) => 
   await expect(authDialog).toBeHidden();
   await expect(page.locator("#userName")).toHaveText(writerName);
 
+  await page.getByRole("button", { name: "Follow Code", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Unfollow Code", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Follow Noah Patel", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Unfollow Noah Patel", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "For you", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Picked for you" })).toBeVisible();
+  await expect(page.locator(".recommendation-reason").first()).toContainText("Because you follow");
+  await page.getByRole("button", { name: "All", exact: true }).click();
+
   await page.getByRole("button", { name: "Write" }).click();
   await expect(writeDialog).toBeVisible();
   await writeDialog.getByRole("textbox", { name: "Title", exact: true }).fill(storyTitle);
@@ -203,7 +212,31 @@ test("writer can sign up, publish, read, and edit a story", async ({ page }) => 
   await expect(readerDialog.locator("#responseList")).toContainText("This response came from a browser test.");
 
   const publishedUrl = page.url();
-  await page.reload();
+  const readerApi = await request.newContext({ baseURL: baseUrl });
+  await readerApi.post("/api/auth/register", {
+    data: {
+      name: "Notification Reader",
+      email: `e2e-reader-${runId}@example.com`,
+      password: "reader-password-1",
+      bio: "Creates notification events."
+    }
+  });
+  const storyId = new URL(publishedUrl).pathname.split("/")[2];
+  await readerApi.post(`/api/stories/${encodeURIComponent(storyId)}/clap`, { data: {} });
+  await readerApi.post(`/api/stories/${encodeURIComponent(storyId)}/responses`, {
+    data: { text: "A second reader created this notification." }
+  });
+  await readerApi.dispose();
+
+  await readerDialog.getByRole("button", { name: "Close reader" }).click();
+  await page.getByRole("button", { name: "Notifications" }).click();
+  const notificationsDialog = page.locator("#notificationsDialog");
+  await expect(notificationsDialog).toContainText("Notification Reader clapped");
+  await expect(notificationsDialog).toContainText("Notification Reader responded");
+  await notificationsDialog.getByRole("button", { name: "Mark all read" }).click();
+  await notificationsDialog.getByRole("button", { name: "Close notifications" }).click();
+
+  await page.goto(publishedUrl);
   await expect(page).toHaveURL(publishedUrl);
   await expect(readerDialog.locator("#readerTitle")).toHaveText(storyTitle);
 
@@ -218,4 +251,18 @@ test("writer can sign up, publish, read, and edit a story", async ({ page }) => 
   await expect(page).toHaveURL(/\/stories\/.+\/edited-browser-story-/);
   await expect(readerDialog.locator("#readerTitle")).toHaveText(editedTitle);
   await expect(readerDialog.locator("#readerBody")).toContainText("The edited version proves");
+});
+
+test("social discovery controls fit a mobile viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(baseUrl);
+
+  await expect(page.getByRole("button", { name: "For you", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Follow Code", exact: true })).toBeVisible();
+
+  const pageWidth = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth
+  }));
+  expect(pageWidth.scrollWidth).toBeLessThanOrEqual(pageWidth.clientWidth);
 });

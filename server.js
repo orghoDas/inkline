@@ -214,6 +214,25 @@ function serializeSystemEvent(event) {
   };
 }
 
+function serializeNotification(notification) {
+  return {
+    id: notification.id,
+    type: notification.type,
+    message: notification.message,
+    read: Boolean(notification.readAt),
+    readAt: toIso(notification.readAt),
+    createdAt: toIso(notification.createdAt),
+    dateLabel: dateLabel(notification.createdAt),
+    story: notification.story
+      ? {
+          id: notification.story.id,
+          slug: notification.story.slug,
+          title: notification.story.title
+        }
+      : null
+  };
+}
+
 async function seedStarterStories(client = getPrisma()) {
   const storyCount = await client.story.count();
   if (storyCount > 0) return false;
@@ -251,6 +270,9 @@ async function writeDb(db) {
   const now = new Date();
 
   await client.$transaction(async (tx) => {
+    await tx.notification.deleteMany({});
+    await tx.authorFollow.deleteMany({});
+    await tx.topicFollow.deleteMany({});
     await tx.bookmark.deleteMany({});
     await tx.clap.deleteMany({});
     await tx.response.deleteMany({});
@@ -1074,6 +1096,103 @@ function getAuthorKey(story) {
   return story.authorId ? `user-${story.authorId}` : `seed-${slugify(story.authorName)}`;
 }
 
+async function getFollowStatePrisma(user, client = getPrisma()) {
+  if (!user) {
+    return {
+      authorKeys: new Set(),
+      topics: new Set(),
+      authorFollows: [],
+      topicFollows: []
+    };
+  }
+
+  const [authorFollows, topicFollows] = await Promise.all([
+    client.authorFollow.findMany({
+      where: { userId: user.id },
+      orderBy: { createdAt: "asc" }
+    }),
+    client.topicFollow.findMany({
+      where: { userId: user.id },
+      orderBy: { createdAt: "asc" }
+    })
+  ]);
+
+  return {
+    authorKeys: new Set(authorFollows.map((follow) => follow.authorKey)),
+    topics: new Set(topicFollows.map((follow) => follow.topic)),
+    authorFollows,
+    topicFollows
+  };
+}
+
+async function createNotificationPrisma(data) {
+  if (!data.userId || data.userId === data.actorId) return null;
+
+  const notification = {
+    id: crypto.randomUUID(),
+    userId: data.userId,
+    actorId: data.actorId ?? null,
+    storyId: data.storyId ?? null,
+    type: normalizeText(data.type, 80),
+    message: normalizeText(data.message, 240),
+    dedupeKey: data.dedupeKey ? normalizeText(data.dedupeKey, 240) : null,
+    createdAt: new Date()
+  };
+
+  if (notification.dedupeKey) {
+    return getPrisma().notification.upsert({
+      where: { dedupeKey: notification.dedupeKey },
+      create: notification,
+      update: {
+        message: notification.message,
+        readAt: null,
+        createdAt: notification.createdAt
+      }
+    });
+  }
+
+  return getPrisma().notification.create({ data: notification });
+}
+
+async function notifyStoryFollowersPrisma(story) {
+  if (story.status !== "published") return;
+
+  const client = getPrisma();
+  const authorKey = getAuthorKey(story);
+  const [authorFollowers, topicFollowers] = await Promise.all([
+    client.authorFollow.findMany({
+      where: { authorKey },
+      select: { userId: true }
+    }),
+    client.topicFollow.findMany({
+      where: { topic: story.topic },
+      select: { userId: true }
+    })
+  ]);
+  const authorFollowerIds = new Set(authorFollowers.map((follow) => follow.userId));
+  const recipients = new Set([
+    ...authorFollowers.map((follow) => follow.userId),
+    ...topicFollowers.map((follow) => follow.userId)
+  ]);
+
+  await Promise.all(
+    [...recipients]
+      .filter((userId) => userId !== story.authorId)
+      .map((userId) =>
+        createNotificationPrisma({
+          userId,
+          actorId: story.authorId,
+          storyId: story.id,
+          type: "story_published",
+          message: authorFollowerIds.has(userId)
+            ? `${story.authorName} published "${story.title}".`
+            : `New in ${story.topic}: "${story.title}".`,
+          dedupeKey: `story-published:${story.id}:${userId}`
+        })
+      )
+  );
+}
+
 function publicResponse(response, user, story) {
   const isHidden = response.status === "hidden";
   const canModerate = Boolean(user && (story.authorId === user.id || isAdmin(user)));
@@ -1122,6 +1241,7 @@ function storyPrismaInclude(user, options = {}) {
 
 function publicStoryFromPrisma(record, user, options = {}) {
   const story = serializeStory(record);
+  const followState = options.followState;
   const responses = (record.responses ?? []).map(serializeResponse);
   const canEdit = Boolean(user && story.authorId === user.id);
   const canAdminModerate = Boolean(user && isAdmin(user));
@@ -1147,6 +1267,8 @@ function publicStoryFromPrisma(record, user, options = {}) {
     claps: record.clap?.count ?? 0,
     responseCount,
     bookmarked: Boolean(user && record.bookmarks?.length),
+    authorFollowed: Boolean(followState?.authorKeys.has(getAuthorKey(story))),
+    topicFollowed: Boolean(followState?.topics.has(story.topic)),
     canEdit,
     canAdminModerate
   };
@@ -1212,6 +1334,51 @@ function validateStoryInput(body) {
   };
 }
 
+function followedStoryWhere(followState) {
+  const authorIds = [];
+  const authorNames = [];
+
+  for (const follow of followState.authorFollows) {
+    if (follow.authorKey.startsWith("user-")) {
+      authorIds.push(follow.authorKey.slice("user-".length));
+    } else {
+      authorNames.push(follow.authorName);
+    }
+  }
+
+  const followed = [];
+  if (authorIds.length > 0) followed.push({ authorId: { in: authorIds } });
+  if (authorNames.length > 0) followed.push({ authorName: { in: authorNames } });
+  if (followState.topicFollows.length > 0) {
+    followed.push({ topic: { in: followState.topicFollows.map((follow) => follow.topic) } });
+  }
+
+  return followed;
+}
+
+function recommendationScore(story, followState) {
+  const createdAt = new Date(story.createdAt).getTime();
+  const ageDays = Math.max(0, (Date.now() - createdAt) / (24 * 60 * 60 * 1000));
+  const freshness = Math.max(0, 30 - ageDays);
+  const followedAuthor = followState.authorKeys.has(getAuthorKey(story));
+  const followedTopic = followState.topics.has(story.topic);
+
+  return (
+    (followedAuthor ? 80 : 0) +
+    (followedTopic ? 50 : 0) +
+    Math.min(story.clap?.count ?? 0, 25) * 2 +
+    Math.min(story._count?.responses ?? 0, 15) * 3 +
+    freshness
+  );
+}
+
+function recommendationReason(story, followState) {
+  if (followState.authorKeys.has(getAuthorKey(story))) return `Because you follow ${story.authorName}`;
+  if (followState.topics.has(story.topic)) return `Because you follow ${story.topic}`;
+  if ((story.clap?.count ?? 0) > 0) return "Popular with Inkline readers";
+  return "Fresh from the community";
+}
+
 async function handleStoryIndexPrisma(req, res, url) {
   await ensureDb();
   const user = await getUserFromRequestPrisma(req);
@@ -1220,11 +1387,20 @@ async function handleStoryIndexPrisma(req, res, url) {
   const cursor = url.searchParams.get("cursor");
   const offset = Math.max(0, Number(url.searchParams.get("offset") ?? 0));
   const search = normalizeText(url.searchParams.get("search"), 120);
+  const feed = normalizeText(url.searchParams.get("feed"), 20) || "latest";
+  if (!["latest", "following", "for-you"].includes(feed)) {
+    throw new HttpError(400, "Unknown story feed.");
+  }
+  if (feed !== "latest" && !user) {
+    throw new HttpError(401, "Sign in to view your personalized feed.");
+  }
+  const followState = await getFollowStatePrisma(user, client);
   const include = storyPrismaInclude(user);
   let page;
   let hasMore;
   let nextCursor = null;
   let nextOffset = null;
+  let recommendations = new Map();
 
   if (search) {
     const storyIds = await findPublishedStoryIdsBySearch(client, search, limit, offset);
@@ -1240,6 +1416,47 @@ async function handleStoryIndexPrisma(req, res, url) {
     page = stories.sort((first, second) => order.get(first.id) - order.get(second.id));
     hasMore = storyIds.length > limit;
     nextOffset = hasMore ? offset + pageIds.length : null;
+  } else if (feed === "following") {
+    const followed = followedStoryWhere(followState);
+    const stories = followed.length
+      ? await client.story.findMany({
+          where: {
+            status: "published",
+            OR: followed
+          },
+          orderBy: { createdAt: "desc" },
+          skip: offset,
+          take: limit + 1,
+          include
+        })
+      : [];
+
+    page = stories.slice(0, limit);
+    hasMore = stories.length > limit;
+    nextOffset = hasMore ? offset + page.length : null;
+  } else if (feed === "for-you") {
+    const candidates = await client.story.findMany({
+      where: { status: "published" },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      include
+    });
+    const ranked = candidates
+      .map((story) => ({
+        story,
+        score: recommendationScore(story, followState)
+      }))
+      .sort(
+        (first, second) =>
+          second.score - first.score || new Date(second.story.createdAt) - new Date(first.story.createdAt)
+      );
+    const rankedPage = ranked.slice(offset, offset + limit);
+    page = rankedPage.map(({ story }) => story);
+    recommendations = new Map(
+      rankedPage.map(({ story }) => [story.id, recommendationReason(story, followState)])
+    );
+    hasMore = ranked.length > offset + page.length;
+    nextOffset = hasMore ? offset + page.length : null;
   } else {
     const where = { status: "published" };
     const cursorDate = toDate(cursor, null);
@@ -1260,7 +1477,11 @@ async function handleStoryIndexPrisma(req, res, url) {
   }
 
   return sendJson(res, 200, {
-    stories: page.map((story) => publicStoryFromPrisma(story, user)),
+    stories: page.map((story) => ({
+      ...publicStoryFromPrisma(story, user, { followState }),
+      recommendationReason: recommendations.get(story.id) ?? null
+    })),
+    feed,
     nextCursor,
     nextOffset,
     hasMore
@@ -1270,6 +1491,7 @@ async function handleStoryIndexPrisma(req, res, url) {
 async function handleMyDraftsPrisma(req, res) {
   await ensureDb();
   const signedInUser = await requireUserPrisma(req);
+  const followState = await getFollowStatePrisma(signedInUser);
   const drafts = await getPrisma().story.findMany({
     where: {
       authorId: signedInUser.id,
@@ -1280,13 +1502,14 @@ async function handleMyDraftsPrisma(req, res) {
   });
 
   return sendJson(res, 200, {
-    drafts: drafts.map((story) => publicStoryFromPrisma(story, signedInUser))
+    drafts: drafts.map((story) => publicStoryFromPrisma(story, signedInUser, { followState }))
   });
 }
 
 async function handleStoryDetailPrisma(req, res, storyId) {
   await ensureDb();
   const user = await getUserFromRequestPrisma(req);
+  const followState = await getFollowStatePrisma(user);
   const story = await getPrisma().story.findUnique({
     where: { id: storyId },
     include: storyPrismaInclude(user, { includeResponses: true })
@@ -1301,7 +1524,7 @@ async function handleStoryDetailPrisma(req, res, storyId) {
   }
 
   return sendJson(res, 200, {
-    story: publicStoryFromPrisma(story, user, { includeResponses: true })
+    story: publicStoryFromPrisma(story, user, { includeResponses: true, followState })
   });
 }
 
@@ -1322,6 +1545,7 @@ async function findStoryForActionPrisma(storyId, user) {
 }
 
 async function findPublicStoryForResponsePrisma(storyId, user) {
+  const followState = await getFollowStatePrisma(user);
   const story = await getPrisma().story.findUnique({
     where: { id: storyId },
     include: storyPrismaInclude(user, { includeResponses: true })
@@ -1331,7 +1555,7 @@ async function findPublicStoryForResponsePrisma(storyId, user) {
     throw new HttpError(404, "Story not found.");
   }
 
-  return publicStoryFromPrisma(story, user, { includeResponses: true });
+  return publicStoryFromPrisma(story, user, { includeResponses: true, followState });
 }
 
 async function handleCreateStoryPrisma(req, res) {
@@ -1365,8 +1589,12 @@ async function handleCreateStoryPrisma(req, res) {
     },
     include: storyPrismaInclude(signedInUser, { includeResponses: true })
   });
+  await notifyStoryFollowersPrisma(serializeStory(createdStory));
+  const followState = await getFollowStatePrisma(signedInUser);
 
-  return sendJson(res, 201, { story: publicStoryFromPrisma(createdStory, signedInUser, { includeResponses: true }) });
+  return sendJson(res, 201, {
+    story: publicStoryFromPrisma(createdStory, signedInUser, { includeResponses: true, followState })
+  });
 }
 
 async function handleUpdateStoryPrisma(req, res, storyId) {
@@ -1398,8 +1626,14 @@ async function handleUpdateStoryPrisma(req, res, storyId) {
   if (story.image && story.image !== storyInput.image) {
     await deleteStoredImageIfOwned(story.image);
   }
+  if (story.status === "draft" && storyInput.status === "published") {
+    await notifyStoryFollowersPrisma(serializeStory(updatedStory));
+  }
+  const followState = await getFollowStatePrisma(signedInUser);
 
-  return sendJson(res, 200, { story: publicStoryFromPrisma(updatedStory, signedInUser, { includeResponses: true }) });
+  return sendJson(res, 200, {
+    story: publicStoryFromPrisma(updatedStory, signedInUser, { includeResponses: true, followState })
+  });
 }
 
 async function handleDeleteStoryPrisma(req, res, storyId) {
@@ -1427,6 +1661,16 @@ async function handleClapStoryPrisma(req, res, storyId) {
     create: { storyId: story.id, count: 1 },
     update: { count: { increment: 1 } }
   });
+  if (user && story.authorId && story.authorId !== user.id) {
+    await createNotificationPrisma({
+      userId: story.authorId,
+      actorId: user.id,
+      storyId: story.id,
+      type: "story_clapped",
+      message: `${user.name} clapped for "${story.title}".`,
+      dedupeKey: `story-clapped:${story.id}:${user.id}`
+    });
+  }
 
   return sendJson(res, 200, { story: await findPublicStoryForResponsePrisma(story.id, user) });
 }
@@ -1487,7 +1731,7 @@ async function handleCreateResponsePrisma(req, res, storyId) {
 
   if (text.length < 2) throw new HttpError(400, "Response is too short.");
 
-  await getPrisma().response.create({
+  const response = await getPrisma().response.create({
     data: {
       id: crypto.randomUUID(),
       storyId: story.id,
@@ -1498,6 +1742,16 @@ async function handleCreateResponsePrisma(req, res, storyId) {
       createdAt: new Date()
     }
   });
+  if (story.authorId && story.authorId !== signedInUser.id) {
+    await createNotificationPrisma({
+      userId: story.authorId,
+      actorId: signedInUser.id,
+      storyId: story.id,
+      type: "story_response",
+      message: `${signedInUser.name} responded to "${story.title}".`,
+      dedupeKey: `story-response:${response.id}`
+    });
+  }
 
   return sendJson(res, 201, { story: await findPublicStoryForResponsePrisma(story.id, signedInUser) });
 }
@@ -1747,6 +2001,209 @@ async function handleLogoutPrisma(req, res) {
   return sendJson(res, 200, { ok: true }, clearSessionHeader());
 }
 
+async function handleFollowStatePrisma(req, res) {
+  await ensureDb();
+  const signedInUser = await requireUserPrisma(req);
+  const followState = await getFollowStatePrisma(signedInUser);
+
+  return sendJson(res, 200, {
+    authors: followState.authorFollows.map((follow) => ({
+      authorKey: follow.authorKey,
+      authorName: follow.authorName,
+      createdAt: toIso(follow.createdAt)
+    })),
+    topics: followState.topicFollows.map((follow) => ({
+      topic: follow.topic,
+      createdAt: toIso(follow.createdAt)
+    }))
+  });
+}
+
+async function handleToggleAuthorFollowPrisma(req, res) {
+  await ensureDb();
+  const signedInUser = await requireUserPrisma(req);
+  const body = await readJsonBody(req);
+  const requestedKey = normalizeText(body.authorKey, 160);
+  const requestedName = normalizeText(body.authorName, 80);
+  let story;
+
+  if (requestedKey.startsWith("user-")) {
+    const authorId = requestedKey.slice("user-".length);
+    story = await getPrisma().story.findFirst({
+      where: {
+        status: "published",
+        authorId
+      }
+    });
+  } else {
+    story = await getPrisma().story.findFirst({
+      where: {
+        status: "published",
+        authorId: null,
+        authorName: requestedName
+      }
+    });
+  }
+
+  if (!story || getAuthorKey(story) !== requestedKey) {
+    throw new HttpError(404, "Author not found.");
+  }
+  if (story.authorId === signedInUser.id) {
+    throw new HttpError(400, "You cannot follow yourself.");
+  }
+
+  const key = {
+    userId_authorKey: {
+      userId: signedInUser.id,
+      authorKey: requestedKey
+    }
+  };
+  const existing = await getPrisma().authorFollow.findUnique({ where: key });
+  let followed;
+
+  if (existing) {
+    await getPrisma().authorFollow.delete({ where: key });
+    followed = false;
+  } else {
+    await getPrisma().authorFollow.create({
+      data: {
+        id: crypto.randomUUID(),
+        userId: signedInUser.id,
+        authorKey: requestedKey,
+        authorName: story.authorName,
+        createdAt: new Date()
+      }
+    });
+    followed = true;
+
+    if (story.authorId) {
+      await createNotificationPrisma({
+        userId: story.authorId,
+        actorId: signedInUser.id,
+        type: "author_followed",
+        message: `${signedInUser.name} followed you.`,
+        dedupeKey: `author-followed:${story.authorId}:${signedInUser.id}`
+      });
+    }
+  }
+
+  return sendJson(res, 200, {
+    authorKey: requestedKey,
+    authorName: story.authorName,
+    followed
+  });
+}
+
+async function handleToggleTopicFollowPrisma(req, res) {
+  await ensureDb();
+  const signedInUser = await requireUserPrisma(req);
+  const body = await readJsonBody(req);
+  const requestedTopic = normalizeText(body.topic, 30);
+  const story = await getPrisma().story.findFirst({
+    where: {
+      status: "published",
+      topic: requestedTopic
+    }
+  });
+
+  if (!story) throw new HttpError(404, "Topic not found.");
+
+  const key = {
+    userId_topic: {
+      userId: signedInUser.id,
+      topic: story.topic
+    }
+  };
+  const existing = await getPrisma().topicFollow.findUnique({ where: key });
+  let followed;
+
+  if (existing) {
+    await getPrisma().topicFollow.delete({ where: key });
+    followed = false;
+  } else {
+    await getPrisma().topicFollow.create({
+      data: {
+        id: crypto.randomUUID(),
+        userId: signedInUser.id,
+        topic: story.topic,
+        createdAt: new Date()
+      }
+    });
+    followed = true;
+  }
+
+  return sendJson(res, 200, {
+    topic: story.topic,
+    followed
+  });
+}
+
+async function handleNotificationsPrisma(req, res) {
+  await ensureDb();
+  const signedInUser = await requireUserPrisma(req);
+  const [notifications, unreadCount] = await Promise.all([
+    getPrisma().notification.findMany({
+      where: { userId: signedInUser.id },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+      include: {
+        story: {
+          select: {
+            id: true,
+            slug: true,
+            title: true
+          }
+        }
+      }
+    }),
+    getPrisma().notification.count({
+      where: {
+        userId: signedInUser.id,
+        readAt: null
+      }
+    })
+  ]);
+
+  return sendJson(res, 200, {
+    notifications: notifications.map(serializeNotification),
+    unreadCount
+  });
+}
+
+async function handleReadNotificationsPrisma(req, res) {
+  await ensureDb();
+  const signedInUser = await requireUserPrisma(req);
+  const body = await readJsonBody(req);
+  const notificationId = normalizeText(body.id, 160);
+
+  if (notificationId) {
+    await getPrisma().notification.updateMany({
+      where: {
+        id: notificationId,
+        userId: signedInUser.id
+      },
+      data: { readAt: new Date() }
+    });
+  } else {
+    await getPrisma().notification.updateMany({
+      where: {
+        userId: signedInUser.id,
+        readAt: null
+      },
+      data: { readAt: new Date() }
+    });
+  }
+
+  const unreadCount = await getPrisma().notification.count({
+    where: {
+      userId: signedInUser.id,
+      readAt: null
+    }
+  });
+
+  return sendJson(res, 200, { ok: true, unreadCount });
+}
+
 async function handleUploadPrisma(req, res) {
   await ensureDb();
   const signedInUser = await requireUserPrisma(req);
@@ -1951,6 +2408,26 @@ async function handleApi(req, res, url) {
 
   if (req.method === "GET" && url.pathname === "/api/dev-emails") {
     return handleDevEmailsPrisma(req, res);
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/follows") {
+    return handleFollowStatePrisma(req, res);
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/follows/authors") {
+    return handleToggleAuthorFollowPrisma(req, res);
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/follows/topics") {
+    return handleToggleTopicFollowPrisma(req, res);
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/notifications") {
+    return handleNotificationsPrisma(req, res);
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/notifications/read") {
+    return handleReadNotificationsPrisma(req, res);
   }
 
   if (req.method === "POST" && url.pathname === "/api/uploads") {

@@ -1,6 +1,7 @@
 const state = {
   stories: [],
   user: null,
+  feedMode: "latest",
   activeFilter: "all",
   activeStory: null,
   activeAuthor: null,
@@ -15,6 +16,10 @@ const state = {
   loadingMore: false,
   searchQuery: "",
   searchTimer: null,
+  followedAuthors: new Map(),
+  followedTopics: new Set(),
+  notifications: [],
+  unreadNotificationCount: 0,
   adminModeration: {
     responses: [],
     stories: [],
@@ -27,6 +32,8 @@ const defaultCoverImage = "https://images.unsplash.com/photo-1516321318423-f06f8
 
 const elements = {
   authButton: document.querySelector("#authButton"),
+  notificationsButton: document.querySelector("#notificationsButton"),
+  notificationCount: document.querySelector("#notificationCount"),
   signOutButton: document.querySelector("#signOutButton"),
   userPill: document.querySelector("#userPill"),
   userName: document.querySelector("#userName"),
@@ -39,12 +46,16 @@ const elements = {
   featuredStory: document.querySelector("#featuredStory"),
   storyList: document.querySelector("#storyList"),
   emptyState: document.querySelector("#emptyState"),
+  feedEyebrow: document.querySelector("#feedEyebrow"),
+  feedTitle: document.querySelector("#feedTitle"),
   topicList: document.querySelector("#topicList"),
   authorList: document.querySelector("#authorList"),
   searchInput: document.querySelector("#searchInput"),
-  tabs: document.querySelectorAll(".tab"),
+  filterTabs: document.querySelectorAll("[data-filter]"),
+  feedTabs: document.querySelectorAll("[data-feed]"),
   readerDialog: document.querySelector("#readerDialog"),
   authorDialog: document.querySelector("#authorDialog"),
+  notificationsDialog: document.querySelector("#notificationsDialog"),
   writeDialog: document.querySelector("#writeDialog"),
   authDialog: document.querySelector("#authDialog"),
   settingsDialog: document.querySelector("#settingsDialog"),
@@ -73,6 +84,7 @@ const elements = {
   profileAvatar: document.querySelector("#profileAvatar"),
   profileName: document.querySelector("#profileName"),
   profileBio: document.querySelector("#profileBio"),
+  profileFollowButton: document.querySelector("#profileFollowButton"),
   profileStats: document.querySelector("#profileStats"),
   profileStoryList: document.querySelector("#profileStoryList"),
   draftsPanel: document.querySelector("#draftsPanel"),
@@ -112,6 +124,8 @@ const elements = {
   adminResponseList: document.querySelector("#adminResponseList"),
   adminStoryList: document.querySelector("#adminStoryList"),
   adminDiagnosticList: document.querySelector("#adminDiagnosticList"),
+  notificationList: document.querySelector("#notificationList"),
+  markNotificationsReadButton: document.querySelector("#markNotificationsReadButton"),
   resetTokenInput: document.querySelector("#resetTokenInput"),
   resetEmailInput: document.querySelector("#resetEmailInput"),
   resetPasswordInput: document.querySelector("#resetPasswordInput"),
@@ -170,6 +184,26 @@ function getAuthorInitials(author) {
     .slice(0, 2)
     .map((part) => part[0].toUpperCase())
     .join("");
+}
+
+function isAuthorFollowed(authorKey) {
+  return state.followedAuthors.has(authorKey);
+}
+
+function syncStoryFollowState() {
+  state.stories = state.stories.map((story) => ({
+    ...story,
+    authorFollowed: isAuthorFollowed(story.authorKey),
+    topicFollowed: state.followedTopics.has(story.topic)
+  }));
+
+  if (state.activeStory) {
+    state.activeStory = {
+      ...state.activeStory,
+      authorFollowed: isAuthorFollowed(state.activeStory.authorKey),
+      topicFollowed: state.followedTopics.has(state.activeStory.topic)
+    };
+  }
 }
 
 function getVisibleStories() {
@@ -251,6 +285,9 @@ function createStoryLink(story, options = {}) {
     footer.append(createElement("span", { className: "owner-badge", text: "Your story" }));
   }
 
+  if (story.recommendationReason) {
+    copy.append(createElement("p", { className: "recommendation-reason", text: story.recommendationReason }));
+  }
   copy.append(meta, title, excerpt, footer);
 
   const image = createElement("img", {
@@ -276,7 +313,11 @@ function renderStories() {
   elements.featuredStory.replaceChildren();
   elements.storyList.replaceChildren();
   elements.emptyState.hidden = stories.length > 0;
-  elements.emptyState.textContent = state.searchQuery ? "No stories match that search." : "No stories match that filter.";
+  elements.emptyState.textContent = state.searchQuery
+    ? "No stories match that search."
+    : state.feedMode === "following"
+      ? "Follow authors or topics to build this feed."
+      : "No stories match that filter.";
   elements.loadMoreButton.hidden = !state.hasMore || state.activeFilter !== "all";
   elements.loadMoreButton.textContent = state.loadingMore ? "Loading..." : "Load more";
 
@@ -323,10 +364,11 @@ function renderDrafts() {
 }
 
 function renderTopics() {
-  const topics = ["all", ...new Set(state.stories.map((story) => story.topic))];
+  const topics = ["all", ...new Set(["Design", "Code", "Life", "Writing", ...state.stories.map((story) => story.topic)])];
   elements.topicList.replaceChildren();
 
   topics.forEach((topic) => {
+    const row = createElement("div", { className: "topic-row" });
     const button = createElement("button", {
       className: `topic-button${topic === state.activeFilter ? " is-active" : ""}`,
       text: topic === "all" ? "All topics" : topic,
@@ -334,7 +376,22 @@ function renderTopics() {
     });
 
     button.addEventListener("click", () => setFilter(topic));
-    elements.topicList.append(button);
+    row.append(button);
+
+    if (topic !== "all") {
+      const follow = createElement("button", {
+        className: `compact-follow-button${state.followedTopics.has(topic) ? " is-followed" : ""}`,
+        text: state.followedTopics.has(topic) ? "Following" : "Follow",
+        attrs: {
+          type: "button",
+          "aria-label": `${state.followedTopics.has(topic) ? "Unfollow" : "Follow"} ${topic}`
+        }
+      });
+      follow.addEventListener("click", () => toggleTopicFollow(topic));
+      row.append(follow);
+    }
+
+    elements.topicList.append(row);
   });
 }
 
@@ -360,6 +417,7 @@ function renderAuthors() {
   elements.authorList.replaceChildren();
 
   authors.forEach((author) => {
+    const row = createElement("div", { className: "author-row" });
     const button = createElement("button", {
       className: "author-button",
       attrs: { type: "button" }
@@ -372,7 +430,22 @@ function renderAuthors() {
     copy.append(name, meta);
     button.append(avatar, copy);
     button.addEventListener("click", () => openAuthorProfile(author.key));
-    elements.authorList.append(button);
+    row.append(button);
+
+    if (author.key !== `user-${state.user?.id}`) {
+      const follow = createElement("button", {
+        className: `compact-follow-button${isAuthorFollowed(author.key) ? " is-followed" : ""}`,
+        text: isAuthorFollowed(author.key) ? "Following" : "Follow",
+        attrs: {
+          type: "button",
+          "aria-label": `${isAuthorFollowed(author.key) ? "Unfollow" : "Follow"} ${author.name}`
+        }
+      });
+      follow.addEventListener("click", () => toggleAuthorFollow(author.key, author.name));
+      row.append(follow);
+    }
+
+    elements.authorList.append(row);
   });
 }
 
@@ -392,15 +465,37 @@ function renderStats() {
 function renderSession() {
   elements.userPill.hidden = !state.user;
   elements.authButton.hidden = Boolean(state.user);
+  elements.notificationsButton.hidden = !state.user;
   elements.adminButton.hidden = !state.user?.isAdmin;
   elements.settingsButton.hidden = !state.user;
   elements.signOutButton.hidden = !state.user;
   elements.userName.textContent = state.user?.name ?? "";
   elements.responseName.value = state.user?.name ?? "";
+  elements.notificationCount.textContent = String(state.unreadNotificationCount);
+  elements.notificationCount.hidden = !state.user || state.unreadNotificationCount === 0;
+}
+
+function renderFeedNavigation() {
+  const headings = {
+    latest: ["Latest", "Recommended for you"],
+    "for-you": ["Personalized", "Picked for you"],
+    following: ["Following", "From authors and topics you follow"]
+  };
+  const [eyebrow, title] = headings[state.feedMode];
+  elements.feedEyebrow.textContent = eyebrow;
+  elements.feedTitle.textContent = title;
+
+  elements.filterTabs.forEach((tab) => {
+    tab.classList.toggle("is-active", state.feedMode === "latest" && tab.dataset.filter === state.activeFilter);
+  });
+  elements.feedTabs.forEach((tab) => {
+    tab.classList.toggle("is-active", tab.dataset.feed === state.feedMode);
+  });
 }
 
 function render() {
   renderSession();
+  renderFeedNavigation();
   renderStories();
   renderDrafts();
   renderTopics();
@@ -413,6 +508,8 @@ async function refreshStories() {
   const params = new URLSearchParams({ limit: String(state.pageSize) });
   if (state.searchQuery) {
     params.set("search", state.searchQuery);
+  } else if (state.feedMode !== "latest") {
+    params.set("feed", state.feedMode);
   }
 
   const { stories, nextCursor, nextOffset, hasMore } = await api(`/api/stories?${params}`);
@@ -432,6 +529,9 @@ async function loadMoreStories() {
   const params = new URLSearchParams({ limit: String(state.pageSize) });
   if (state.searchQuery) {
     params.set("search", state.searchQuery);
+    params.set("offset", String(state.nextOffset ?? state.stories.length));
+  } else if (state.feedMode !== "latest") {
+    params.set("feed", state.feedMode);
     params.set("offset", String(state.nextOffset ?? state.stories.length));
   } else if (state.nextCursor) {
     params.set("cursor", state.nextCursor);
@@ -467,14 +567,54 @@ async function refreshSession() {
   renderSession();
 }
 
-function setFilter(filter) {
+async function refreshFollows() {
+  if (!state.user) {
+    state.followedAuthors = new Map();
+    state.followedTopics = new Set();
+    syncStoryFollowState();
+    return;
+  }
+
+  const { authors, topics } = await api("/api/follows");
+  state.followedAuthors = new Map(authors.map((follow) => [follow.authorKey, follow.authorName]));
+  state.followedTopics = new Set(topics.map((follow) => follow.topic));
+  syncStoryFollowState();
+}
+
+async function refreshNotifications() {
+  if (!state.user) {
+    state.notifications = [];
+    state.unreadNotificationCount = 0;
+    renderSession();
+    return;
+  }
+
+  const { notifications, unreadCount } = await api("/api/notifications");
+  state.notifications = notifications;
+  state.unreadNotificationCount = unreadCount;
+  renderSession();
+}
+
+async function setFilter(filter) {
+  const changedFeed = state.feedMode !== "latest";
+  state.feedMode = "latest";
   state.activeFilter = filter;
 
-  elements.tabs.forEach((tab) => {
-    tab.classList.toggle("is-active", tab.dataset.filter === filter);
-  });
+  if (changedFeed) {
+    await refreshStories();
+  } else {
+    render();
+  }
+}
 
-  render();
+async function setFeedMode(feedMode) {
+  if (!requireUser("view your personalized feed")) return;
+
+  state.feedMode = feedMode;
+  state.activeFilter = "all";
+  elements.searchInput.value = "";
+  state.searchQuery = "";
+  await refreshStories();
 }
 
 function requireUser(action) {
@@ -593,6 +733,55 @@ function renderResponses(responses) {
   });
 }
 
+async function toggleAuthorFollow(authorKey, authorName) {
+  if (!requireUser(`follow ${authorName}`)) return;
+
+  const result = await api("/api/follows/authors", {
+    method: "POST",
+    body: JSON.stringify({ authorKey, authorName })
+  });
+
+  if (result.followed) {
+    state.followedAuthors.set(result.authorKey, result.authorName);
+  } else {
+    state.followedAuthors.delete(result.authorKey);
+  }
+  syncStoryFollowState();
+
+  if (state.activeAuthor === result.authorKey) {
+    elements.profileFollowButton.textContent = result.followed ? "Following" : "Follow";
+    elements.profileFollowButton.classList.toggle("is-followed", result.followed);
+  }
+
+  if (state.feedMode !== "latest") {
+    await refreshStories();
+  } else {
+    render();
+  }
+}
+
+async function toggleTopicFollow(topic) {
+  if (!requireUser(`follow ${topic}`)) return;
+
+  const result = await api("/api/follows/topics", {
+    method: "POST",
+    body: JSON.stringify({ topic })
+  });
+
+  if (result.followed) {
+    state.followedTopics.add(result.topic);
+  } else {
+    state.followedTopics.delete(result.topic);
+  }
+  syncStoryFollowState();
+
+  if (state.feedMode !== "latest") {
+    await refreshStories();
+  } else {
+    render();
+  }
+}
+
 function openAuthorProfile(authorKey) {
   const stories = state.stories.filter((story) => story.authorKey === authorKey);
   if (stories.length === 0) return;
@@ -606,6 +795,11 @@ function openAuthorProfile(authorKey) {
   elements.profileAvatar.textContent = getAuthorInitials(author.authorName);
   elements.profileName.textContent = author.authorName;
   elements.profileBio.textContent = author.authorBio;
+  const isOwnProfile = authorKey === `user-${state.user?.id}`;
+  elements.profileFollowButton.hidden = isOwnProfile;
+  elements.profileFollowButton.textContent = isAuthorFollowed(authorKey) ? "Following" : "Follow";
+  elements.profileFollowButton.classList.toggle("is-followed", isAuthorFollowed(authorKey));
+  elements.profileFollowButton.onclick = () => toggleAuthorFollow(authorKey, author.authorName);
   elements.profileStats.replaceChildren(
     createStat("Stories", stories.length),
     createStat("Claps", claps),
@@ -623,6 +817,69 @@ function openAuthorProfile(authorKey) {
   });
 
   elements.authorDialog.showModal();
+}
+
+function renderNotifications() {
+  elements.notificationList.replaceChildren();
+
+  if (state.notifications.length === 0) {
+    elements.notificationList.append(
+      createElement("p", { className: "empty-state compact-empty", text: "No notifications yet." })
+    );
+    return;
+  }
+
+  state.notifications.forEach((notification) => {
+    const button = createElement("button", {
+      className: `notification-item${notification.read ? "" : " is-unread"}`,
+      attrs: { type: "button" }
+    });
+    const message = createElement("strong", { text: notification.message });
+    const meta = createElement("span", { text: `${notification.dateLabel} | ${notification.type.replaceAll("_", " ")}` });
+    button.append(message, meta);
+    button.addEventListener("click", () => openNotification(notification));
+    elements.notificationList.append(button);
+  });
+}
+
+async function openNotificationsDialog() {
+  if (!requireUser("view notifications")) return;
+  await refreshNotifications();
+  renderNotifications();
+  elements.notificationsDialog.showModal();
+}
+
+async function openNotification(notification) {
+  if (!notification.read) {
+    const { unreadCount } = await api("/api/notifications/read", {
+      method: "POST",
+      body: JSON.stringify({ id: notification.id })
+    });
+    notification.read = true;
+    state.unreadNotificationCount = unreadCount;
+    renderSession();
+  }
+
+  if (notification.story) {
+    elements.notificationsDialog.close();
+    await navigateToStory(notification.story.id);
+  } else {
+    renderNotifications();
+  }
+}
+
+async function markAllNotificationsRead() {
+  const { unreadCount } = await api("/api/notifications/read", {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+  state.notifications = state.notifications.map((notification) => ({
+    ...notification,
+    read: true
+  }));
+  state.unreadNotificationCount = unreadCount;
+  renderSession();
+  renderNotifications();
 }
 
 function createStat(label, value) {
@@ -1158,8 +1415,10 @@ async function submitAuth(event) {
     state.user = user;
     elements.authDialog.close();
     elements.authForm.reset();
+    await refreshFollows();
     await refreshStories();
     await refreshDrafts();
+    await refreshNotifications();
     render();
     if (devEmail?.link) {
       alert(`Verification link created for development:\n${devEmail.link}`);
@@ -1176,6 +1435,12 @@ async function signOut() {
   });
 
   state.user = null;
+  state.feedMode = "latest";
+  state.activeFilter = "all";
+  state.followedAuthors = new Map();
+  state.followedTopics = new Set();
+  state.notifications = [];
+  state.unreadNotificationCount = 0;
   await refreshStories();
   await refreshDrafts();
   render();
@@ -1215,8 +1480,9 @@ async function handleRoute() {
 function queueBackendSearch() {
   clearTimeout(state.searchTimer);
   state.searchTimer = setTimeout(() => {
+    state.feedMode = "latest";
     state.activeFilter = "all";
-    elements.tabs.forEach((tab) => {
+    elements.filterTabs.forEach((tab) => {
       tab.classList.toggle("is-active", tab.dataset.filter === "all");
     });
     refreshStories().catch((error) => {
@@ -1239,6 +1505,7 @@ elements.openSavedButton.addEventListener("click", () => {
 });
 
 elements.authButton.addEventListener("click", () => openAuthDialog("signin"));
+elements.notificationsButton.addEventListener("click", openNotificationsDialog);
 elements.adminButton.addEventListener("click", openAdminDialog);
 elements.settingsButton.addEventListener("click", openSettingsDialog);
 elements.signOutButton.addEventListener("click", signOut);
@@ -1252,6 +1519,10 @@ document.querySelector("#closeReaderButton").addEventListener("click", closeRead
 
 document.querySelector("#closeAuthorButton").addEventListener("click", () => {
   elements.authorDialog.close();
+});
+
+document.querySelector("#closeNotificationsButton").addEventListener("click", () => {
+  elements.notificationsDialog.close();
 });
 
 document.querySelector("#closeAuthButton").addEventListener("click", () => {
@@ -1324,6 +1595,7 @@ elements.forgotPasswordButton.addEventListener("click", () => {
 });
 elements.resetForm.addEventListener("submit", submitPasswordReset);
 elements.requestResetButton.addEventListener("click", requestPasswordReset);
+elements.markNotificationsReadButton.addEventListener("click", markAllNotificationsRead);
 elements.searchInput.addEventListener("input", queueBackendSearch);
 elements.richEditor.addEventListener("input", updateEditorCount);
 
@@ -1356,8 +1628,12 @@ elements.editorToolbar.addEventListener("click", (event) => {
   runEditorCommand(button.dataset.command);
 });
 
-elements.tabs.forEach((tab) => {
+elements.filterTabs.forEach((tab) => {
   tab.addEventListener("click", () => setFilter(tab.dataset.filter));
+});
+
+elements.feedTabs.forEach((tab) => {
+  tab.addEventListener("click", () => setFeedMode(tab.dataset.feed));
 });
 
 document.addEventListener("keydown", (event) => {
@@ -1378,8 +1654,10 @@ window.addEventListener("popstate", handleRoute);
 
 async function boot() {
   await refreshSession();
+  await refreshFollows();
   await refreshStories();
   await refreshDrafts();
+  await refreshNotifications();
   render();
   await handleRoute();
 }

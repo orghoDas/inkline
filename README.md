@@ -7,6 +7,9 @@ Inkline is a small Medium-style writing app built for learning. It has a vanilla
 ## What is included
 
 - A responsive story feed with search, topic filters, and saved stories.
+- Following authors and topics.
+- Personalized "For you" and "Following" feeds.
+- In-app notifications for follows, new stories, claps, and responses.
 - Dedicated article URLs like `/stories/:id/:slug`.
 - Account creation, sign in, sign out, and cookie-based sessions.
 - Author settings with profile and email editing.
@@ -254,6 +257,11 @@ npm run db:studio
 - `POST /api/auth/verify-email`
 - `POST /api/auth/request-reset`
 - `POST /api/auth/reset-password`
+- `GET /api/follows`
+- `POST /api/follows/authors`
+- `POST /api/follows/topics`
+- `GET /api/notifications`
+- `POST /api/notifications/read`
 - `PUT /api/me`
 - `GET /api/me/drafts`
 - `POST /api/uploads`
@@ -321,22 +329,24 @@ Auth limits are keyed by client IP. Upload and response limits are keyed by sign
 
 1. Trace `boot()` in `app.js` to see how the page loads session data and stories.
 2. Follow `submitAuth()` into `server.js` to learn how sessions are created.
-3. Read `prisma/schema.prisma` to see how users, sessions, stories, responses, bookmarks, claps, uploads, and dev emails map to tables.
+3. Read `prisma/schema.prisma` to see how users, sessions, stories, responses, follows, notifications, bookmarks, claps, uploads, and dev emails map to tables.
 4. Read `handleStoryIndexPrisma()`, `handleStoryDetailPrisma()`, and `handleMyDraftsPrisma()` in `server.js` to see direct Prisma story reads.
 5. Read `handleRegisterPrisma()`, `handleLoginPrisma()`, and `handleResetPasswordPrisma()` to see direct Prisma auth/session writes.
 6. Follow `submitStory()` into `handleCreateStoryPrisma()` and `handleUpdateStoryPrisma()` to see frontend data become persisted Postgres data.
 7. Read `handleCreateResponsePrisma()`, `handleDeleteResponsePrisma()`, and `handleModerateResponsePrisma()` to see direct Prisma comment writes.
 8. Read `handleUploadPrisma()`, `handleUpdateMePrisma()`, and `handleAdminModerationPrisma()` to see direct Prisma file metadata, profile, diagnostics, and admin flows.
 9. Read `importJsonDatabase()` and `writeDb()` in `server.js` to understand how old `data/db.json` records are imported into Postgres tables.
-10. Read `findPublishedStoryIdsBySearch()` and the full-text search migration to see how Postgres ranks matching stories.
-11. Read `applyRateLimit()` to see how fixed-window rate limiting protects auth, uploads, and responses.
-12. Read `saveLocalImageUpload()` and `saveSupabaseImageUpload()` to see how upload storage is swapped by environment.
-13. Read `test/api.test.js` to see how the auth, story, upload, response, and moderation flows can be tested through HTTP.
-14. Read `e2e/writing.spec.js` to see how Playwright tests the same flow through the browser UI.
-15. Read `validateStoryInput()` to see how drafts and published stories use different validation rules.
-16. Use `npm run db:studio` to inspect the database visually while you create stories in the app.
+10. Read `getFollowStatePrisma()`, `recommendationScore()`, and `notifyStoryFollowersPrisma()` to see how follows power feeds and notifications.
+11. Read `findPublishedStoryIdsBySearch()` and the full-text search migration to see how Postgres ranks matching stories.
+12. Read `applyRateLimit()` to see how fixed-window rate limiting protects auth, uploads, and responses.
+13. Read `saveLocalImageUpload()` and `saveSupabaseImageUpload()` to see how upload storage is swapped by environment.
+14. Read `test/api.test.js` to see how the auth, story, follow, notification, upload, response, and moderation flows can be tested through HTTP.
+15. Read `e2e/writing.spec.js` to see how Playwright tests the same flow through the browser UI.
+16. Read `validateStoryInput()` to see how drafts and published stories use different validation rules.
+17. Use `npm run db:studio` to inspect the database visually while you create stories in the app.
 
 ## Next useful features
 
 - Add a Redis-backed rate limiter for multi-instance production deploys.
 - Add a retry or resolve workflow for stored production diagnostics.
+- Add writer analytics for views, reads, followers, and audience growth.

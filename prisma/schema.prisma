@@ -25,6 +25,10 @@ model User {
   responses                  Response[]
   uploads                    Upload[]
   bookmarks                  Bookmark[]
+  authorFollows              AuthorFollow[]
+  topicFollows               TopicFollow[]
+  notifications              Notification[] @relation("NotificationRecipient")
+  notificationActions        Notification[] @relation("NotificationActor")
   moderatedResponses         Response[] @relation("ResponseModerator")
 }
 
@@ -55,6 +59,7 @@ model Story {
   responses      Response[]
   bookmarks      Bookmark[]
   clap           Clap?
+  notifications Notification[]
 
   @@index([status, createdAt])
   @@index([authorId, status])
@@ -114,6 +119,47 @@ model DevEmail {
   subject   String
   link      String
   delivery  String
+}
+
+model AuthorFollow {
+  id         String   @id
+  userId     String
+  authorKey  String
+  authorName String
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, authorKey])
+  @@index([authorKey, createdAt])
+}
+
+model TopicFollow {
+  id        String   @id
+  userId    String
+  topic     String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, topic])
+  @@index([topic, createdAt])
+}
+
+model Notification {
+  id        String    @id
+  userId    String
+  actorId   String?
+  storyId   String?
+  type      String
+  message   String
+  dedupeKey String?   @unique
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation("NotificationRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  actor     User?     @relation("NotificationActor", fields: [actorId], references: [id], onDelete: SetNull)
+  story     Story?    @relation(fields: [storyId], references: [id], onDelete: SetNull)
+
+  @@index([userId, readAt, createdAt])
+  @@index([storyId, createdAt])
 }
 
 model SystemEvent {

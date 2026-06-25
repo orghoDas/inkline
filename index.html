@@ -21,6 +21,10 @@
         <button class="link-button" id="openSavedButton" type="button">Saved</button>
         <button class="ghost-button" id="openWriteButton" type="button">Write</button>
         <button class="link-button" id="authButton" type="button">Sign in</button>
+        <button class="link-button notification-button" id="notificationsButton" type="button" hidden>
+          Notifications
+          <span class="notification-badge" id="notificationCount" hidden>0</span>
+        </button>
         <span class="user-pill" id="userPill" hidden>
           <span id="userName"></span>
         </span>
@@ -48,11 +52,13 @@
         <div class="content-column">
           <div class="section-heading" id="feed">
             <div>
-              <p class="eyebrow">Latest</p>
-              <h2>Recommended for you</h2>
+              <p class="eyebrow" id="feedEyebrow">Latest</p>
+              <h2 id="feedTitle">Recommended for you</h2>
             </div>
             <div class="view-tabs" role="tablist" aria-label="Story filters">
               <button class="tab is-active" type="button" data-filter="all">All</button>
+              <button class="tab" type="button" data-feed="for-you">For you</button>
+              <button class="tab" type="button" data-feed="following">Following</button>
               <button class="tab" type="button" data-filter="Design">Design</button>
               <button class="tab" type="button" data-filter="Code">Code</button>
               <button class="tab" type="button" data-filter="Life">Life</button>
@@ -193,9 +199,24 @@
             <h2 id="profileName"></h2>
             <p id="profileBio"></p>
           </div>
+          <button class="ghost-button" id="profileFollowButton" type="button">Follow</button>
         </div>
         <dl class="profile-stats" id="profileStats"></dl>
         <div class="profile-story-list" id="profileStoryList"></div>
+      </section>
+    </dialog>
+
+    <dialog class="notifications-dialog" id="notificationsDialog">
+      <section class="notifications-panel">
+        <button class="icon-button close-dialog" id="closeNotificationsButton" type="button" aria-label="Close notifications">x</button>
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Activity</p>
+            <h2>Notifications</h2>
+          </div>
+          <button class="link-button" id="markNotificationsReadButton" type="button">Mark all read</button>
+        </div>
+        <div class="notification-list" id="notificationList"></div>
       </section>
     </dialog>
 

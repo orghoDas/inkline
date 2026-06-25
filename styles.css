@@ -17,6 +17,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html {
   scroll-behavior: smooth;
 }
@@ -107,6 +111,25 @@ img {
   gap: 20px;
   font-family: Arial, Helvetica, sans-serif;
   font-size: 0.95rem;
+}
+
+.notification-button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.notification-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #ffffff;
+  font-size: 0.72rem;
+  line-height: 1;
 }
 
 .primary-button,
@@ -288,6 +311,14 @@ img {
   margin-bottom: 18px;
 }
 
+#feed {
+  display: grid;
+}
+
+#feed .view-tabs {
+  width: 100%;
+}
+
 .section-heading.compact h2 {
   font-size: 1.35rem;
 }
@@ -357,6 +388,14 @@ img {
   font-size: 0.86rem;
 }
 
+.story-card .recommendation-reason {
+  margin-bottom: 7px;
+  color: var(--accent-dark);
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
 .story-card h3 {
   margin: 7px 0 9px;
   font-size: clamp(1.35rem, 2vw, 1.95rem);
@@ -418,9 +457,20 @@ img {
 }
 
 .topic-list {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
   gap: 10px;
+}
+
+.topic-row,
+.author-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.topic-row {
+  justify-content: space-between;
 }
 
 .topic-button {
@@ -433,6 +483,27 @@ img {
   font-family: Arial, Helvetica, sans-serif;
   font-size: 0.9rem;
   font-weight: 700;
+}
+
+.compact-follow-button {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent-dark);
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.compact-follow-button:hover,
+.compact-follow-button.is-followed,
+.ghost-button.is-followed {
+  border-color: var(--accent);
+  background: var(--aqua);
+  color: var(--accent-dark);
 }
 
 .topic-button:hover,
@@ -478,6 +549,7 @@ img {
 }
 
 .author-button {
+  flex: 1 1 auto;
   display: flex;
   gap: 12px;
   align-items: center;
@@ -608,6 +680,7 @@ dialog::backdrop {
 
 .reader h2,
 .admin-panel h2,
+.notifications-panel h2,
 .write-form h2,
 .auth-form h2,
 .settings-form h2,
@@ -783,6 +856,7 @@ dialog::backdrop {
 
 .author-profile,
 .admin-panel,
+.notifications-panel,
 .write-form,
 .auth-form,
 .settings-form,
@@ -797,7 +871,7 @@ dialog::backdrop {
 
 .profile-header {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 18px;
   align-items: center;
 }
@@ -860,6 +934,41 @@ dialog::backdrop {
 
 .profile-story-list {
   display: grid;
+}
+
+.notification-list {
+  display: grid;
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--line);
+}
+
+.notification-item {
+  display: grid;
+  gap: 6px;
+  min-height: 68px;
+  padding: 14px 16px;
+  border: 0;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: Arial, Helvetica, sans-serif;
+  text-align: left;
+}
+
+.notification-item.is-unread {
+  background: var(--aqua);
+}
+
+.notification-item strong {
+  line-height: 1.35;
+}
+
+.notification-item span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: capitalize;
 }
 
 .admin-grid {

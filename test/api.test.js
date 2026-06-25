@@ -663,6 +663,72 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
   );
   assert.equal(readerRegistered.user.isAdmin, false);
 
+  const guestFollowingFeed = await guest.request("/api/stories?feed=following&limit=5");
+  assert.equal(guestFollowingFeed.response.status, 401);
+
+  const authorFollow = await expectStatus(
+    reader.json("POST", "/api/follows/authors", {
+      authorKey: `user-${registered.user.id}`,
+      authorName: "Ada Prisma"
+    }),
+    200
+  );
+  assert.equal(authorFollow.followed, true);
+
+  const topicFollow = await expectStatus(
+    reader.json("POST", "/api/follows/topics", {
+      topic: "Testing"
+    }),
+    200
+  );
+  assert.equal(topicFollow.followed, true);
+
+  const followState = await expectStatus(reader.request("/api/follows"), 200);
+  assert.ok(followState.authors.some((follow) => follow.authorKey === `user-${registered.user.id}`));
+  assert.ok(followState.topics.some((follow) => follow.topic === "Testing"));
+
+  const followingFeed = await expectStatus(reader.request("/api/stories?feed=following&limit=5"), 200);
+  assert.ok(followingFeed.stories.some((story) => story.id === storyId));
+  assert.equal(followingFeed.stories.find((story) => story.id === storyId).authorFollowed, true);
+  assert.equal(followingFeed.stories.find((story) => story.id === storyId).topicFollowed, true);
+
+  const personalizedFeed = await expectStatus(reader.request("/api/stories?feed=for-you&limit=5"), 200);
+  assert.ok(personalizedFeed.stories.some((story) => story.id === storyId));
+  assert.match(
+    personalizedFeed.stories.find((story) => story.id === storyId).recommendationReason,
+    /Because you follow/
+  );
+
+  const followNotifications = await expectStatus(admin.request("/api/notifications"), 200);
+  assert.ok(followNotifications.notifications.some((notification) => notification.type === "author_followed"));
+
+  const socialStory = await expectStatus(
+    admin.json("POST", "/api/stories", {
+      title: "A followed writer publishes again",
+      excerpt: "This story tests personalized delivery and notifications.",
+      topic: "Testing",
+      image: "https://images.example.com/social-story.jpg",
+      bodyHtml: "<p>Followers should see this story in their feeds and notification inbox.</p>",
+      status: "published"
+    }),
+    201
+  );
+
+  const readerNotifications = await expectStatus(reader.request("/api/notifications"), 200);
+  const publishNotification = readerNotifications.notifications.find(
+    (notification) => notification.type === "story_published" && notification.story?.id === socialStory.story.id
+  );
+  assert.ok(publishNotification);
+  assert.ok(readerNotifications.unreadCount > 0);
+
+  const markedNotification = await expectStatus(
+    reader.json("POST", "/api/notifications/read", {
+      id: publishNotification.id
+    }),
+    200
+  );
+  assert.ok(markedNotification.unreadCount < readerNotifications.unreadCount);
+
   const bookmarked = await expectStatus(
     reader.json("POST", `/api/stories/${encodePathPart(storyId)}/bookmark`),
     200
@@ -681,6 +747,10 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
   const responseId = responded.story.responses.at(-1).id;
   assert.ok(responseId);
   assert.equal(responded.story.responseCount, 1);
+
+  const writerNotifications = await expectStatus(admin.request("/api/notifications"), 200);
+  assert.ok(writerNotifications.notifications.some((notification) => notification.type === "story_clapped"));
+  assert.ok(writerNotifications.notifications.some((notification) => notification.type === "story_response"));
 
   const responseLimited = await reader.json("POST", `/api/stories/${encodePathPart(storyId)}/responses`, {
     text: "This second response should be rate limited."
@@ -715,6 +785,10 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
   const detailAfterResponseDelete = await expectStatus(admin.request(`/api/stories/${encodePathPart(storyId)}`), 200);
   assert.equal(detailAfterResponseDelete.story.responses.length, 0);
 
+  await expectStatus(
+    admin.request(`/api/admin/stories/${encodePathPart(socialStory.story.id)}`, { method: "DELETE" }),
+    200
+  );
   await expectStatus(admin.request(`/api/admin/stories/${encodePathPart(storyId)}`, { method: "DELETE" }), 200);
   assert.equal(latestStorageRequest("DELETE").objectPath, replacementUploadedObject);
   assert.equal(storageObjects.has(replacementUploadedObject), false);
