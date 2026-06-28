@@ -781,6 +781,133 @@ test("API supports auth, publishing, responses, uploads, and moderation", async 
   );
   assert.equal(visible.response.status, "visible");
 
+  await expectStatus(reader.json("POST", `/api/stories/${encodePathPart(storyId)}/view`), 200);
+  await expectStatus(reader.json("POST", `/api/stories/${encodePathPart(storyId)}/read`), 200);
+  const writerSubscription = await expectStatus(
+    reader.json("POST", `/api/writers/${encodePathPart(registered.user.id)}/subscription`),
+    200
+  );
+  assert.equal(writerSubscription.subscribed, true);
+  assert.equal(writerSubscription.subscriberCount, 1);
+
+  const analytics = await expectStatus(admin.request("/api/me/analytics"), 200);
+  const storyAnalytics = analytics.stories.find((story) => story.id === storyId);
+  assert.equal(storyAnalytics.views, 1);
+  assert.equal(storyAnalytics.reads, 1);
+  assert.equal(analytics.totals.followers, 1);
+  assert.equal(analytics.totals.subscribers, 1);
+
+  const publicationCreated = await expectStatus(
+    admin.json("POST", "/api/publications", {
+      name: "Prisma Field Notes",
+      description: "A collaborative publication for lessons learned while shipping."
+    }),
+    201
+  );
+  const publicationId = publicationCreated.publication.id;
+  assert.equal(publicationCreated.publication.role, "owner");
+
+  const memberAdded = await expectStatus(
+    admin.json("POST", `/api/publications/${encodePathPart(publicationId)}/members`, {
+      email: readerEmail,
+      role: "writer"
+    }),
+    200
+  );
+  assert.ok(memberAdded.publication.members.some((member) => member.userId === readerRegistered.user.id));
+
+  const readerStory = await expectStatus(
+    reader.json("POST", "/api/stories", {
+      title: "A reader joins the editorial desk",
+      excerpt: "This story checks collaborative publication submissions.",
+      topic: "Testing",
+      image: "https://images.example.com/publication-story.jpg",
+      bodyHtml: "<p>Writers can submit their own work for an editor to review and publish.</p>",
+      status: "published"
+    }),
+    201
+  );
+  const submission = await expectStatus(
+    reader.json("POST", `/api/publications/${encodePathPart(publicationId)}/submissions`, {
+      storyId: readerStory.story.id,
+      note: "Ready for an editorial pass."
+    }),
+    201
+  );
+  assert.equal(submission.submission.status, "pending");
+
+  await expectStatus(
+    admin.json(
+      "POST",
+      `/api/publications/${encodePathPart(publicationId)}/submissions/${encodePathPart(submission.submission.id)}`,
+      { status: "accepted" }
+    ),
+    200
+  );
+  const publicationDetail = await expectStatus(
+    reader.request(`/api/publications/${encodePathPart(publicationId)}`),
+    200
+  );
+  assert.ok(publicationDetail.publication.stories.some((story) => story.id === readerStory.story.id));
+  assert.equal(publicationDetail.publication.role, "writer");
+
+  const publicationSubscription = await expectStatus(
+    reader.json("POST", `/api/publications/${encodePathPart(publicationId)}/subscribe`),
+    200
+  );
+  assert.equal(publicationSubscription.subscribed, true);
+  const newsletter = await expectStatus(
+    admin.json("POST", `/api/publications/${encodePathPart(publicationId)}/newsletters`, {
+      subject: "The first field note",
+      body: "A short edition for publication subscribers with the latest editorial update.",
+      send: true
+    }),
+    201
+  );
+  assert.equal(newsletter.issue.status, "sent");
+  assert.equal(newsletter.recipientCount, 1);
+  const newsletterNotifications = await expectStatus(reader.request("/api/notifications"), 200);
+  assert.ok(
+    newsletterNotifications.notifications.some((notification) => notification.type === "publication_newsletter")
+  );
+
+  const report = await expectStatus(
+    reader.json("POST", "/api/reports", {
+      storyId,
+      reason: "misinformation",
+      details: "This is a workflow test for the moderation review queue."
+    }),
+    201
+  );
+  const moderationWithReport = await expectStatus(admin.request("/api/admin/moderation"), 200);
+  assert.ok(moderationWithReport.reports.some((candidate) => candidate.id === report.report.id));
+  await expectStatus(
+    admin.json("POST", `/api/admin/reports/${encodePathPart(report.report.id)}`, {
+      status: "resolved",
+      action: "none"
+    }),
+    200
+  );
+
+  const blocked = await expectStatus(
+    reader.json("POST", "/api/blocks", {
+      userId: registered.user.id
+    }),
+    200
+  );
+  assert.equal(blocked.blocked, true);
+  const feedAfterBlock = await expectStatus(reader.request("/api/stories?limit=20"), 200);
+  assert.ok(feedAfterBlock.stories.every((story) => story.authorId !== registered.user.id));
+  const blockedDetail = await reader.request(`/api/stories/${encodePathPart(storyId)}`);
+  assert.equal(blockedDetail.response.status, 404);
+  const unblocked = await expectStatus(
+    reader.json("POST", "/api/blocks", {
+      userId: registered.user.id
+    }),
+    200
+  );
+  assert.equal(unblocked.blocked, false);
+
   await expectStatus(admin.request(`/api/admin/responses/${encodePathPart(responseId)}`, { method: "DELETE" }), 200);
   const detailAfterResponseDelete = await expectStatus(admin.request(`/api/stories/${encodePathPart(storyId)}`), 200);
   assert.equal(detailAfterResponseDelete.story.responses.length, 0);

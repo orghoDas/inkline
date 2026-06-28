@@ -7,15 +7,15 @@ datasource db {
 }
 
 model User {
-  id                         String     @id
+  id                         String                    @id
   name                       String
-  email                      String     @unique
+  email                      String                    @unique
   bio                        String
-  emailVerified              Boolean    @default(false)
-  role                       String     @default("user")
+  emailVerified              Boolean                   @default(false)
+  role                       String                    @default("user")
   salt                       String
   passwordHash               String
-  createdAt                  DateTime   @default(now())
+  createdAt                  DateTime                  @default(now())
   emailVerificationHash      String?
   emailVerificationExpiresAt DateTime?
   resetTokenHash             String?
@@ -27,9 +27,22 @@ model User {
   bookmarks                  Bookmark[]
   authorFollows              AuthorFollow[]
   topicFollows               TopicFollow[]
-  notifications              Notification[] @relation("NotificationRecipient")
-  notificationActions        Notification[] @relation("NotificationActor")
-  moderatedResponses         Response[] @relation("ResponseModerator")
+  notifications              Notification[]            @relation("NotificationRecipient")
+  notificationActions        Notification[]            @relation("NotificationActor")
+  moderatedResponses         Response[]                @relation("ResponseModerator")
+  writerSubscriptions        WriterSubscription[]      @relation("WriterSubscriber")
+  writerSubscribers          WriterSubscription[]      @relation("WriterAuthor")
+  ownedPublications          Publication[]             @relation("PublicationOwner")
+  publicationMemberships     PublicationMember[]
+  publicationSubmissions     PublicationSubmission[]   @relation("SubmissionAuthor")
+  reviewedSubmissions        PublicationSubmission[]   @relation("SubmissionReviewer")
+  newsletterIssues           NewsletterIssue[]
+  publicationSubscriptions   PublicationSubscription[]
+  blocksCreated              Block[]                   @relation("Blocker")
+  blocksReceived             Block[]                   @relation("BlockedUser")
+  reportsCreated             Report[]                  @relation("ReportReporter")
+  reportsReceived            Report[]                  @relation("ReportTargetUser")
+  reportsResolved            Report[]                  @relation("ReportResolver")
 }
 
 model Session {
@@ -40,29 +53,35 @@ model Session {
 }
 
 model Story {
-  id             String     @id
-  status         String     @default("published")
-  slug           String
-  title          String
-  excerpt        String
-  authorId       String?
-  authorName     String
-  authorBio      String
-  topic          String
-  image          String
-  bodyHtml       String
-  minutes        Int
-  searchText     String
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @default(now())
-  author         User?      @relation(fields: [authorId], references: [id], onDelete: SetNull)
-  responses      Response[]
-  bookmarks      Bookmark[]
-  clap           Clap?
+  id            String                  @id
+  status        String                  @default("published")
+  slug          String
+  title         String
+  excerpt       String
+  authorId      String?
+  authorName    String
+  authorBio     String
+  topic         String
+  image         String
+  bodyHtml      String
+  minutes       Int
+  searchText    String
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @default(now())
+  publicationId String?
+  author        User?                   @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  publication   Publication?            @relation(fields: [publicationId], references: [id], onDelete: SetNull)
+  responses     Response[]
+  bookmarks     Bookmark[]
+  clap          Clap?
+  metric        StoryMetric?
+  submissions   PublicationSubmission[]
+  reports       Report[]
   notifications Notification[]
 
   @@index([status, createdAt])
   @@index([authorId, status])
+  @@index([publicationId, status, createdAt])
 }
 
 model Bookmark {
@@ -94,6 +113,7 @@ model Response {
   story       Story     @relation(fields: [storyId], references: [id], onDelete: Cascade)
   user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
   moderator   User?     @relation("ResponseModerator", fields: [moderatedBy], references: [id], onDelete: SetNull)
+  reports     Report[]
 
   @@index([storyId, createdAt])
   @@index([status, createdAt])
@@ -160,6 +180,136 @@ model Notification {
 
   @@index([userId, readAt, createdAt])
   @@index([storyId, createdAt])
+}
+
+model StoryMetric {
+  storyId   String   @id
+  views     Int      @default(0)
+  reads     Int      @default(0)
+  updatedAt DateTime @updatedAt
+  story     Story    @relation(fields: [storyId], references: [id], onDelete: Cascade)
+}
+
+model WriterSubscription {
+  subscriberId String
+  authorId     String
+  createdAt    DateTime @default(now())
+  subscriber   User     @relation("WriterSubscriber", fields: [subscriberId], references: [id], onDelete: Cascade)
+  author       User     @relation("WriterAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@id([subscriberId, authorId])
+  @@index([authorId, createdAt])
+}
+
+model Publication {
+  id            String                    @id
+  slug          String                    @unique
+  name          String
+  description   String
+  ownerId       String
+  createdAt     DateTime                  @default(now())
+  updatedAt     DateTime                  @updatedAt
+  owner         User                      @relation("PublicationOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  members       PublicationMember[]
+  stories       Story[]
+  submissions   PublicationSubmission[]
+  newsletters   NewsletterIssue[]
+  subscriptions PublicationSubscription[]
+
+  @@index([ownerId, createdAt])
+}
+
+model PublicationMember {
+  publicationId String
+  userId        String
+  role          String
+  createdAt     DateTime    @default(now())
+  publication   Publication @relation(fields: [publicationId], references: [id], onDelete: Cascade)
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([publicationId, userId])
+  @@index([userId, role])
+}
+
+model PublicationSubmission {
+  id            String      @id
+  publicationId String
+  storyId       String
+  authorId      String
+  status        String      @default("pending")
+  note          String
+  reviewedBy    String?
+  reviewedAt    DateTime?
+  createdAt     DateTime    @default(now())
+  publication   Publication @relation(fields: [publicationId], references: [id], onDelete: Cascade)
+  story         Story       @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  author        User        @relation("SubmissionAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  reviewer      User?       @relation("SubmissionReviewer", fields: [reviewedBy], references: [id], onDelete: SetNull)
+
+  @@unique([publicationId, storyId])
+  @@index([publicationId, status, createdAt])
+  @@index([authorId, createdAt])
+}
+
+model NewsletterIssue {
+  id            String      @id
+  publicationId String
+  createdBy     String
+  subject       String
+  body          String
+  status        String      @default("draft")
+  createdAt     DateTime    @default(now())
+  sentAt        DateTime?
+  publication   Publication @relation(fields: [publicationId], references: [id], onDelete: Cascade)
+  creator       User        @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+
+  @@index([publicationId, createdAt])
+}
+
+model PublicationSubscription {
+  publicationId String
+  subscriberId  String
+  createdAt     DateTime    @default(now())
+  publication   Publication @relation(fields: [publicationId], references: [id], onDelete: Cascade)
+  subscriber    User        @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
+
+  @@id([publicationId, subscriberId])
+  @@index([subscriberId, createdAt])
+}
+
+model Block {
+  blockerId     String
+  blockedUserId String
+  createdAt     DateTime @default(now())
+  blocker       User     @relation("Blocker", fields: [blockerId], references: [id], onDelete: Cascade)
+  blockedUser   User     @relation("BlockedUser", fields: [blockedUserId], references: [id], onDelete: Cascade)
+
+  @@id([blockerId, blockedUserId])
+  @@index([blockedUserId, createdAt])
+}
+
+model Report {
+  id             String    @id
+  reporterId     String
+  reportedUserId String?
+  storyId        String?
+  responseId     String?
+  reason         String
+  details        String
+  status         String    @default("open")
+  createdAt      DateTime  @default(now())
+  resolvedAt     DateTime?
+  resolvedBy     String?
+  reporter       User      @relation("ReportReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedUser   User?     @relation("ReportTargetUser", fields: [reportedUserId], references: [id], onDelete: SetNull)
+  story          Story?    @relation(fields: [storyId], references: [id], onDelete: SetNull)
+  response       Response? @relation(fields: [responseId], references: [id], onDelete: SetNull)
+  resolver       User?     @relation("ReportResolver", fields: [resolvedBy], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@index([reportedUserId, status])
+  @@index([storyId, status])
+  @@index([responseId, status])
 }
 
 model SystemEvent {

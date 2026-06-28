@@ -222,6 +222,8 @@ test("writer can sign up, publish, read, and edit a story", async ({ page }) => 
     }
   });
   const storyId = new URL(publishedUrl).pathname.split("/")[2];
+  await readerApi.post(`/api/stories/${encodeURIComponent(storyId)}/view`, { data: {} });
+  await readerApi.post(`/api/stories/${encodeURIComponent(storyId)}/read`, { data: {} });
   await readerApi.post(`/api/stories/${encodeURIComponent(storyId)}/clap`, { data: {} });
   await readerApi.post(`/api/stories/${encodeURIComponent(storyId)}/responses`, {
     data: { text: "A second reader created this notification." }
@@ -235,6 +237,23 @@ test("writer can sign up, publish, read, and edit a story", async ({ page }) => 
   await expect(notificationsDialog).toContainText("Notification Reader responded");
   await notificationsDialog.getByRole("button", { name: "Mark all read" }).click();
   await notificationsDialog.getByRole("button", { name: "Close notifications" }).click();
+
+  await page.getByRole("button", { name: "Analytics" }).click();
+  const analyticsDialog = page.locator("#analyticsDialog");
+  await expect(analyticsDialog).toContainText("1");
+  await expect(analyticsDialog).toContainText(storyTitle);
+  await analyticsDialog.getByRole("button", { name: "Close analytics" }).click();
+
+  await page.getByRole("button", { name: "Publications" }).click();
+  const publicationsDialog = page.locator("#publicationsDialog");
+  await publicationsDialog.getByLabel("Name").fill(`Browser Field Notes ${runId}`);
+  await publicationsDialog.getByLabel("Description").fill(
+    "A publication created through the collaborative publishing workspace."
+  );
+  await publicationsDialog.getByRole("button", { name: "Create", exact: true }).click();
+  await expect(publicationsDialog).toContainText(`Browser Field Notes ${runId}`);
+  await expect(publicationsDialog).toContainText("Your role: owner");
+  await publicationsDialog.getByRole("button", { name: "Close publications" }).click();
 
   await page.goto(publishedUrl);
   await expect(page).toHaveURL(publishedUrl);
@@ -260,9 +279,20 @@ test("social discovery controls fit a mobile viewport", async ({ page }) => {
   await expect(page.getByRole("button", { name: "For you", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Follow Code", exact: true })).toBeVisible();
 
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  const authDialog = page.locator("#authDialog");
+  await authDialog.getByLabel("Email").fill(writerEmail);
+  await authDialog.getByLabel("Password").fill(writerPassword);
+  await authDialog.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page.locator("#userName")).toHaveText(writerName);
+
   const pageWidth = await page.evaluate(() => ({
     clientWidth: document.documentElement.clientWidth,
-    scrollWidth: document.documentElement.scrollWidth
+    scrollWidth: document.documentElement.scrollWidth,
+    navClientWidth: document.querySelector(".nav-links").clientWidth,
+    navScrollWidth: document.querySelector(".nav-links").scrollWidth
   }));
   expect(pageWidth.scrollWidth).toBeLessThanOrEqual(pageWidth.clientWidth);
+  expect(pageWidth.navClientWidth).toBeLessThanOrEqual(pageWidth.clientWidth);
+  expect(pageWidth.navScrollWidth).toBeGreaterThanOrEqual(pageWidth.navClientWidth);
 });

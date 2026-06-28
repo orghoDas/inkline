@@ -21,6 +21,8 @@
         <button class="link-button" id="openSavedButton" type="button">Saved</button>
         <button class="ghost-button" id="openWriteButton" type="button">Write</button>
         <button class="link-button" id="authButton" type="button">Sign in</button>
+        <button class="link-button" id="analyticsButton" type="button" hidden>Analytics</button>
+        <button class="link-button" id="publicationsButton" type="button">Publications</button>
         <button class="link-button notification-button" id="notificationsButton" type="button" hidden>
           Notifications
           <span class="notification-badge" id="notificationCount" hidden>0</span>
@@ -154,6 +156,7 @@
             <button class="ghost-button" id="clapButton" type="button">Clap</button>
             <button class="ghost-button" id="bookmarkButton" type="button">Bookmark</button>
             <button class="ghost-button" id="copyLinkButton" type="button">Copy link</button>
+            <button class="ghost-button" id="reportStoryButton" type="button" hidden>Report</button>
           </div>
 
           <div class="owner-actions" id="ownerActions" hidden>
@@ -199,7 +202,11 @@
             <h2 id="profileName"></h2>
             <p id="profileBio"></p>
           </div>
-          <button class="ghost-button" id="profileFollowButton" type="button">Follow</button>
+          <div class="profile-actions">
+            <button class="ghost-button" id="profileFollowButton" type="button">Follow</button>
+            <button class="ghost-button" id="profileSubscribeButton" type="button" hidden>Subscribe</button>
+            <button class="danger-button" id="profileBlockButton" type="button" hidden>Block</button>
+          </div>
         </div>
         <dl class="profile-stats" id="profileStats"></dl>
         <div class="profile-story-list" id="profileStoryList"></div>
@@ -218,6 +225,80 @@
         </div>
         <div class="notification-list" id="notificationList"></div>
       </section>
+    </dialog>
+
+    <dialog class="analytics-dialog" id="analyticsDialog">
+      <section class="workspace-panel">
+        <button class="icon-button close-dialog" id="closeAnalyticsButton" type="button" aria-label="Close analytics">x</button>
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Writer desk</p>
+            <h2>Analytics</h2>
+          </div>
+        </div>
+        <dl class="analytics-totals" id="analyticsTotals"></dl>
+        <div class="analytics-story-list" id="analyticsStoryList"></div>
+      </section>
+    </dialog>
+
+    <dialog class="publications-dialog" id="publicationsDialog">
+      <section class="workspace-panel">
+        <button class="icon-button close-dialog" id="closePublicationsButton" type="button" aria-label="Close publications">x</button>
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Collaborative publishing</p>
+            <h2>Publications</h2>
+          </div>
+        </div>
+        <div class="publication-workspace">
+          <aside class="publication-sidebar">
+            <form class="compact-form" id="createPublicationForm" hidden>
+              <h3>Create publication</h3>
+              <label>
+                Name
+                <input name="name" type="text" maxlength="80" required>
+              </label>
+              <label>
+                Description
+                <textarea name="description" rows="3" maxlength="240" required></textarea>
+              </label>
+              <button class="primary-button" type="submit">Create</button>
+            </form>
+            <div class="publication-list" id="publicationList"></div>
+          </aside>
+          <div class="publication-detail" id="publicationDetail">
+            <p class="empty-state compact-empty">Choose a publication to open its workspace.</p>
+          </div>
+        </div>
+      </section>
+    </dialog>
+
+    <dialog class="report-dialog" id="reportDialog">
+      <form class="compact-form report-form" id="reportForm">
+        <button class="icon-button close-dialog" id="closeReportButton" type="button" aria-label="Close report form">x</button>
+        <p class="eyebrow">Community safety</p>
+        <h2>Report content</h2>
+        <input id="reportStoryId" name="storyId" type="hidden">
+        <input id="reportResponseId" name="responseId" type="hidden">
+        <label>
+          Reason
+          <select name="reason">
+            <option value="spam">Spam</option>
+            <option value="harassment">Harassment</option>
+            <option value="hate">Hate or abuse</option>
+            <option value="misinformation">Misinformation</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <label>
+          What should moderators know?
+          <textarea name="details" rows="5" maxlength="500" required></textarea>
+        </label>
+        <p class="form-error" id="reportError" role="alert"></p>
+        <div class="form-actions">
+          <button class="primary-button" type="submit">Send report</button>
+        </div>
+      </form>
     </dialog>
 
     <dialog class="write-dialog" id="writeDialog">
@@ -337,6 +418,16 @@
               </div>
             </div>
             <div class="admin-list" id="adminStoryList"></div>
+          </section>
+
+          <section class="admin-reports-section">
+            <div class="section-heading compact">
+              <div>
+                <p class="eyebrow">Safety queue</p>
+                <h3>Reports</h3>
+              </div>
+            </div>
+            <div class="admin-list" id="adminReportList"></div>
           </section>
 
           <section class="admin-diagnostics-section">

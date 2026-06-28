@@ -10,6 +10,9 @@ Inkline is a small Medium-style writing app built for learning. It has a vanilla
 - Following authors and topics.
 - Personalized "For you" and "Following" feeds.
 - In-app notifications for follows, new stories, claps, and responses.
+- Writer analytics for story views, reads, followers, and subscribers.
+- Writer subscriptions and publication newsletter subscriptions.
+- Publications with owners, editors, writers, submission review, and email newsletters.
 - Dedicated article URLs like `/stories/:id/:slug`.
 - Account creation, sign in, sign out, and cookie-based sessions.
 - Author settings with profile and email editing.
@@ -21,7 +24,8 @@ Inkline is a small Medium-style writing app built for learning. It has a vanilla
 - Claps, bookmarks, and reader responses.
 - Response deletion by the response author or story author.
 - Response hiding/showing by story authors and admins.
-- Admin moderation tools for recent responses, stories, and production diagnostics.
+- Reporting and blocking controls with block-aware feeds and interactions.
+- Admin moderation queues for reports, responses, stories, and production diagnostics.
 - Postgres full-text search across titles, subtitles, authors, topics, and story bodies.
 - Email verification and password reset flows using expiring single-use tokens plus an email delivery adapter.
 - In-memory fixed-window rate limiting for auth, uploads, and responses.
@@ -264,8 +268,23 @@ npm run db:studio
 - `POST /api/notifications/read`
 - `PUT /api/me`
 - `GET /api/me/drafts`
+- `GET /api/me/analytics`
+- `GET /api/writers/:authorId/subscription`
+- `POST /api/writers/:authorId/subscription`
+- `GET /api/publications`
+- `POST /api/publications`
+- `GET /api/publications/:id`
+- `POST /api/publications/:id/members`
+- `POST /api/publications/:id/submissions`
+- `POST /api/publications/:id/submissions/:submissionId`
+- `POST /api/publications/:id/subscribe`
+- `POST /api/publications/:id/newsletters`
+- `GET /api/blocks`
+- `POST /api/blocks`
+- `POST /api/reports`
 - `POST /api/uploads`
 - `GET /api/admin/moderation`
+- `POST /api/admin/reports/:reportId`
 - `POST /api/admin/responses/:responseId/moderate`
 - `DELETE /api/admin/responses/:responseId`
 - `DELETE /api/admin/stories/:id`
@@ -276,6 +295,8 @@ npm run db:studio
 - `DELETE /api/stories/:id`
 - `POST /api/stories/:id/clap`
 - `POST /api/stories/:id/bookmark`
+- `POST /api/stories/:id/view`
+- `POST /api/stories/:id/read`
 - `POST /api/stories/:id/responses`
 - `DELETE /api/stories/:id/responses/:responseId`
 - `POST /api/stories/:id/responses/:responseId/moderate`
@@ -329,7 +350,7 @@ Auth limits are keyed by client IP. Upload and response limits are keyed by sign
 
 1. Trace `boot()` in `app.js` to see how the page loads session data and stories.
 2. Follow `submitAuth()` into `server.js` to learn how sessions are created.
-3. Read `prisma/schema.prisma` to see how users, sessions, stories, responses, follows, notifications, bookmarks, claps, uploads, and dev emails map to tables.
+3. Read `prisma/schema.prisma` to see how users, stories, publications, subscriptions, analytics, reports, blocks, and notifications map to tables.
 4. Read `handleStoryIndexPrisma()`, `handleStoryDetailPrisma()`, and `handleMyDraftsPrisma()` in `server.js` to see direct Prisma story reads.
 5. Read `handleRegisterPrisma()`, `handleLoginPrisma()`, and `handleResetPasswordPrisma()` to see direct Prisma auth/session writes.
 6. Follow `submitStory()` into `handleCreateStoryPrisma()` and `handleUpdateStoryPrisma()` to see frontend data become persisted Postgres data.
@@ -340,7 +361,7 @@ Auth limits are keyed by client IP. Upload and response limits are keyed by sign
 11. Read `findPublishedStoryIdsBySearch()` and the full-text search migration to see how Postgres ranks matching stories.
 12. Read `applyRateLimit()` to see how fixed-window rate limiting protects auth, uploads, and responses.
 13. Read `saveLocalImageUpload()` and `saveSupabaseImageUpload()` to see how upload storage is swapped by environment.
-14. Read `test/api.test.js` to see how the auth, story, follow, notification, upload, response, and moderation flows can be tested through HTTP.
+14. Read `test/api.test.js` to see how publishing, analytics, publications, newsletters, reports, blocking, and moderation are tested through HTTP.
 15. Read `e2e/writing.spec.js` to see how Playwright tests the same flow through the browser UI.
 16. Read `validateStoryInput()` to see how drafts and published stories use different validation rules.
 17. Use `npm run db:studio` to inspect the database visually while you create stories in the app.
@@ -349,4 +370,6 @@ Auth limits are keyed by client IP. Upload and response limits are keyed by sign
 
 - Add a Redis-backed rate limiter for multi-instance production deploys.
 - Add a retry or resolve workflow for stored production diagnostics.
-- Add writer analytics for views, reads, followers, and audience growth.
+- Add time-series analytics and referrer breakdowns instead of lifetime counters only.
+- Add publication invitations, member removal, and scheduled newsletter delivery.
+- Add moderator notes, report appeals, and account-level suspension tools.

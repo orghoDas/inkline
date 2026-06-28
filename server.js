@@ -921,8 +921,10 @@ async function sendEmailPrisma(req, message) {
     from: EMAIL_FROM,
     to: [message.to],
     subject: message.subject,
-    text: `${message.subject}\n\n${message.link}`,
-    html: `<p>${escapeAttribute(message.subject)}</p><p><a href="${escapeAttribute(message.link)}">${escapeAttribute(message.link)}</a></p>`
+    text: message.text || `${message.subject}\n\n${message.link}`,
+    html:
+      message.html ||
+      `<p>${escapeAttribute(message.subject)}</p><p><a href="${escapeAttribute(message.link)}">${escapeAttribute(message.link)}</a></p>`
   };
 
   if (EMAIL_PROVIDER === "resend") {
@@ -1125,6 +1127,46 @@ async function getFollowStatePrisma(user, client = getPrisma()) {
   };
 }
 
+async function getBlockedUserIdsPrisma(user, client = getPrisma()) {
+  if (!user) return new Set();
+
+  const blocks = await client.block.findMany({
+    where: { blockerId: user.id },
+    select: { blockedUserId: true }
+  });
+  return new Set(blocks.map((block) => block.blockedUserId));
+}
+
+function visibleStoryWhere(where, blockedUserIds) {
+  if (!blockedUserIds?.size) return where;
+
+  return {
+    AND: [
+      where,
+      {
+        OR: [
+          { authorId: null },
+          { authorId: { notIn: [...blockedUserIds] } }
+        ]
+      }
+    ]
+  };
+}
+
+async function assertUsersMayInteractPrisma(firstUserId, secondUserId) {
+  if (!firstUserId || !secondUserId || firstUserId === secondUserId) return;
+
+  const block = await getPrisma().block.findFirst({
+    where: {
+      OR: [
+        { blockerId: firstUserId, blockedUserId: secondUserId },
+        { blockerId: secondUserId, blockedUserId: firstUserId }
+      ]
+    }
+  });
+  if (block) throw new HttpError(403, "This interaction is unavailable because one of you blocked the other.");
+}
+
 async function createNotificationPrisma(data) {
   if (!data.userId || data.userId === data.actorId) return null;
 
@@ -1197,15 +1239,18 @@ function publicResponse(response, user, story) {
   const isHidden = response.status === "hidden";
   const canModerate = Boolean(user && (story.authorId === user.id || isAdmin(user)));
   const canDelete = Boolean(user && (response.userId === user.id || story.authorId === user.id || isAdmin(user)));
+  const canReport = Boolean(user && response.userId && response.userId !== user.id);
 
   return {
     id: response.id,
     storyId: response.storyId,
+    userId: response.userId,
     name: response.name,
     text: isHidden && !canModerate ? "This response was hidden by the author." : response.text,
     status: response.status,
     canDelete,
     canModerate,
+    canReport,
     dateLabel: dateLabel(response.createdAt),
     createdAt: response.createdAt
   };
@@ -1214,6 +1259,13 @@ function publicResponse(response, user, story) {
 function storyPrismaInclude(user, options = {}) {
   return {
     clap: true,
+    publication: {
+      select: {
+        id: true,
+        slug: true,
+        name: true
+      }
+    },
     ...(user
       ? {
           bookmarks: {
@@ -1245,6 +1297,7 @@ function publicStoryFromPrisma(record, user, options = {}) {
   const responses = (record.responses ?? []).map(serializeResponse);
   const canEdit = Boolean(user && story.authorId === user.id);
   const canAdminModerate = Boolean(user && isAdmin(user));
+  const canReport = Boolean(user && story.authorId && story.authorId !== user.id);
   const responseCount = record._count?.responses ?? responses.filter((response) => response.status !== "hidden").length;
 
   const base = {
@@ -1258,6 +1311,7 @@ function publicStoryFromPrisma(record, user, options = {}) {
     authorName: story.authorName,
     authorBio: story.authorBio,
     topic: story.topic,
+    publication: record.publication ?? null,
     image: story.image,
     bodyHtml: story.bodyHtml,
     minutes: story.minutes,
@@ -1270,12 +1324,14 @@ function publicStoryFromPrisma(record, user, options = {}) {
     authorFollowed: Boolean(followState?.authorKeys.has(getAuthorKey(story))),
     topicFollowed: Boolean(followState?.topics.has(story.topic)),
     canEdit,
+    canReport,
     canAdminModerate
   };
 
   if (options.includeResponses) {
     base.responses = responses
       .filter((response) => response.status !== "hidden" || canEdit || canAdminModerate)
+      .filter((response) => !response.userId || !options.blockedUserIds?.has(response.userId))
       .map((response) => publicResponse(response, user, story));
   }
 
@@ -1394,7 +1450,10 @@ async function handleStoryIndexPrisma(req, res, url) {
   if (feed !== "latest" && !user) {
     throw new HttpError(401, "Sign in to view your personalized feed.");
   }
-  const followState = await getFollowStatePrisma(user, client);
+  const [followState, blockedUserIds] = await Promise.all([
+    getFollowStatePrisma(user, client),
+    getBlockedUserIdsPrisma(user, client)
+  ]);
   const include = storyPrismaInclude(user);
   let page;
   let hasMore;
@@ -1408,7 +1467,7 @@ async function handleStoryIndexPrisma(req, res, url) {
     const order = new Map(pageIds.map((id, index) => [id, index]));
     const stories = pageIds.length
       ? await client.story.findMany({
-          where: { id: { in: pageIds } },
+          where: visibleStoryWhere({ id: { in: pageIds } }, blockedUserIds),
           include
         })
       : [];
@@ -1420,10 +1479,10 @@ async function handleStoryIndexPrisma(req, res, url) {
     const followed = followedStoryWhere(followState);
     const stories = followed.length
       ? await client.story.findMany({
-          where: {
+          where: visibleStoryWhere({
             status: "published",
             OR: followed
-          },
+          }, blockedUserIds),
           orderBy: { createdAt: "desc" },
           skip: offset,
           take: limit + 1,
@@ -1436,7 +1495,7 @@ async function handleStoryIndexPrisma(req, res, url) {
     nextOffset = hasMore ? offset + page.length : null;
   } else if (feed === "for-you") {
     const candidates = await client.story.findMany({
-      where: { status: "published" },
+      where: visibleStoryWhere({ status: "published" }, blockedUserIds),
       orderBy: { createdAt: "desc" },
       take: 100,
       include
@@ -1465,7 +1524,7 @@ async function handleStoryIndexPrisma(req, res, url) {
     }
 
     const stories = await client.story.findMany({
-      where,
+      where: visibleStoryWhere(where, blockedUserIds),
       orderBy: { createdAt: "desc" },
       take: limit + 1,
       include
@@ -1509,7 +1568,10 @@ async function handleMyDraftsPrisma(req, res) {
 async function handleStoryDetailPrisma(req, res, storyId) {
   await ensureDb();
   const user = await getUserFromRequestPrisma(req);
-  const followState = await getFollowStatePrisma(user);
+  const [followState, blockedUserIds] = await Promise.all([
+    getFollowStatePrisma(user),
+    getBlockedUserIdsPrisma(user)
+  ]);
   const story = await getPrisma().story.findUnique({
     where: { id: storyId },
     include: storyPrismaInclude(user, { includeResponses: true })
@@ -1522,9 +1584,12 @@ async function handleStoryDetailPrisma(req, res, storyId) {
   if ((story.status ?? "published") === "draft" && (!user || story.authorId !== user.id)) {
     throw new HttpError(404, "Story not found.");
   }
+  if (story.authorId && blockedUserIds.has(story.authorId)) {
+    throw new HttpError(404, "Story not found.");
+  }
 
   return sendJson(res, 200, {
-    story: publicStoryFromPrisma(story, user, { includeResponses: true, followState })
+    story: publicStoryFromPrisma(story, user, { includeResponses: true, followState, blockedUserIds })
   });
 }
 
@@ -1545,7 +1610,10 @@ async function findStoryForActionPrisma(storyId, user) {
 }
 
 async function findPublicStoryForResponsePrisma(storyId, user) {
-  const followState = await getFollowStatePrisma(user);
+  const [followState, blockedUserIds] = await Promise.all([
+    getFollowStatePrisma(user),
+    getBlockedUserIdsPrisma(user)
+  ]);
   const story = await getPrisma().story.findUnique({
     where: { id: storyId },
     include: storyPrismaInclude(user, { includeResponses: true })
@@ -1555,7 +1623,7 @@ async function findPublicStoryForResponsePrisma(storyId, user) {
     throw new HttpError(404, "Story not found.");
   }
 
-  return publicStoryFromPrisma(story, user, { includeResponses: true, followState });
+  return publicStoryFromPrisma(story, user, { includeResponses: true, followState, blockedUserIds });
 }
 
 async function handleCreateStoryPrisma(req, res) {
@@ -1655,6 +1723,7 @@ async function handleClapStoryPrisma(req, res, storyId) {
   await ensureDb();
   const user = await getUserFromRequestPrisma(req);
   const story = await findStoryForActionPrisma(storyId, user);
+  await assertUsersMayInteractPrisma(user?.id, story.authorId);
 
   await getPrisma().clap.upsert({
     where: { storyId: story.id },
@@ -1726,6 +1795,7 @@ async function handleCreateResponsePrisma(req, res, storyId) {
   const signedInUser = await requireUserPrisma(req);
   applyRateLimit(req, res, RATE_LIMITS.response, signedInUser.id);
   const story = await findStoryForActionPrisma(storyId, signedInUser);
+  await assertUsersMayInteractPrisma(signedInUser.id, story.authorId);
   const body = await readJsonBody(req);
   const text = normalizeText(body.text, 500);
 
@@ -2051,6 +2121,7 @@ async function handleToggleAuthorFollowPrisma(req, res) {
   if (story.authorId === signedInUser.id) {
     throw new HttpError(400, "You cannot follow yourself.");
   }
+  await assertUsersMayInteractPrisma(signedInUser.id, story.authorId);
 
   const key = {
     userId_authorKey: {
@@ -2141,9 +2212,21 @@ async function handleToggleTopicFollowPrisma(req, res) {
 async function handleNotificationsPrisma(req, res) {
   await ensureDb();
   const signedInUser = await requireUserPrisma(req);
+  const blockedUserIds = await getBlockedUserIdsPrisma(signedInUser);
+  const visibleNotificationWhere = {
+    userId: signedInUser.id,
+    ...(blockedUserIds.size
+      ? {
+          OR: [
+            { actorId: null },
+            { actorId: { notIn: [...blockedUserIds] } }
+          ]
+        }
+      : {})
+  };
   const [notifications, unreadCount] = await Promise.all([
     getPrisma().notification.findMany({
-      where: { userId: signedInUser.id },
+      where: visibleNotificationWhere,
       orderBy: { createdAt: "desc" },
       take: 50,
       include: {
@@ -2158,7 +2241,7 @@ async function handleNotificationsPrisma(req, res) {
     }),
     getPrisma().notification.count({
       where: {
-        userId: signedInUser.id,
+        ...visibleNotificationWhere,
         readAt: null
       }
     })
@@ -2173,6 +2256,7 @@ async function handleNotificationsPrisma(req, res) {
 async function handleReadNotificationsPrisma(req, res) {
   await ensureDb();
   const signedInUser = await requireUserPrisma(req);
+  const blockedUserIds = await getBlockedUserIdsPrisma(signedInUser);
   const body = await readJsonBody(req);
   const notificationId = normalizeText(body.id, 160);
 
@@ -2197,11 +2281,964 @@ async function handleReadNotificationsPrisma(req, res) {
   const unreadCount = await getPrisma().notification.count({
     where: {
       userId: signedInUser.id,
-      readAt: null
+      readAt: null,
+      ...(blockedUserIds.size
+        ? {
+            OR: [
+              { actorId: null },
+              { actorId: { notIn: [...blockedUserIds] } }
+            ]
+          }
+        : {})
     }
   });
 
   return sendJson(res, 200, { ok: true, unreadCount });
+}
+
+async function handleTrackStoryMetricPrisma(req, res, storyId, metric) {
+  await ensureDb();
+  const user = await getUserFromRequestPrisma(req);
+  const story = await findStoryForActionPrisma(storyId, user);
+  if (story.status !== "published") throw new HttpError(400, "Draft activity is not counted.");
+  if (user?.id === story.authorId) {
+    const existing = await getPrisma().storyMetric.findUnique({ where: { storyId: story.id } });
+    return sendJson(res, 200, {
+      storyId: story.id,
+      views: existing?.views ?? 0,
+      reads: existing?.reads ?? 0
+    });
+  }
+
+  const data = metric === "read" ? { reads: 1 } : { views: 1 };
+  const update = metric === "read" ? { reads: { increment: 1 } } : { views: { increment: 1 } };
+  const result = await getPrisma().storyMetric.upsert({
+    where: { storyId: story.id },
+    create: {
+      storyId: story.id,
+      ...data
+    },
+    update
+  });
+
+  return sendJson(res, 200, {
+    storyId: story.id,
+    views: result.views,
+    reads: result.reads
+  });
+}
+
+async function handleWriterAnalyticsPrisma(req, res) {
+  await ensureDb();
+  const signedInUser = await requireUserPrisma(req);
+  const client = getPrisma();
+  const [stories, followers, subscribers] = await Promise.all([
+    client.story.findMany({
+      where: {
+        authorId: signedInUser.id,
+        status: "published"
+      },
+      orderBy: { createdAt: "desc" },
+      include: {
+        metric: true,
+        clap: true,
+        _count: {
+          select: {
+            responses: {
+              where: { status: { not: "hidden" } }
+            }
+          }
+        }
+      }
+    }),
+    client.authorFollow.count({
+      where: { authorKey: `user-${signedInUser.id}` }
+    }),
+    client.writerSubscription.count({
+      where: { authorId: signedInUser.id }
+    })
+  ]);
+  const storyRows = stories.map((story) => ({
+    id: story.id,
+    slug: story.slug,
+    title: story.title,
+    views: story.metric?.views ?? 0,
+    reads: story.metric?.reads ?? 0,
+    claps: story.clap?.count ?? 0,
+    responses: story._count.responses,
+    publishedAt: toIso(story.createdAt)
+  }));
+
+  return sendJson(res, 200, {
+    totals: {
+      views: storyRows.reduce((sum, story) => sum + story.views, 0),
+      reads: storyRows.reduce((sum, story) => sum + story.reads, 0),
+      followers,
+      subscribers
+    },
+    stories: storyRows
+  });
+}
+
+async function findWriterPrisma(authorId) {
+  const author = await getPrisma().user.findUnique({
+    where: { id: authorId },
+    select: {
+      id: true,
+      name: true
+    }
+  });
+  if (!author) throw new HttpError(404, "Writer not found.");
+  return author;
+}
+
+async function handleWriterSubscriptionStatePrisma(req, res, authorId) {
+  await ensureDb();
+  const signedInUser = await requireUserPrisma(req);
+  const author = await findWriterPrisma(authorId);
+  const [subscription, subscriberCount] = await Promise.all([
+    getPrisma().writerSubscription.findUnique({
+      where: {
+        subscriberId_authorId: {
+          subscriberId: signedInUser.id,
+          authorId: author.id
+        }
+      }
+    }),
+    getPrisma().writerSubscription.count({
+      where: { authorId: author.id }
+    })
+  ]);
+
+  return sendJson(res, 200, {
+    authorId: author.id,
+    subscribed: Boolean(subscription),
+    subscriberCount
+  });
+}
+
+async function handleToggleWriterSubscriptionPrisma(req, res, authorId) {
+  await ensureDb();
+  const signedInUser = await requireUserPrisma(req);
+  const author = await findWriterPrisma(authorId);
+  if (author.id === signedInUser.id) throw new HttpError(400, "You cannot subscribe to yourself.");
+  await assertUsersMayInteractPrisma(signedInUser.id, author.id);
+
+  const key = {
+    subscriberId_authorId: {
+      subscriberId: signedInUser.id,
+      authorId: author.id
+    }
+  };
+  const existing = await getPrisma().writerSubscription.findUnique({ where: key });
+  let subscribed;
+
+  if (existing) {
+    await getPrisma().writerSubscription.delete({ where: key });
+    subscribed = false;
+  } else {
+    await getPrisma().writerSubscription.create({
+      data: {
+        subscriberId: signedInUser.id,
+        authorId: author.id,
+        createdAt: new Date()
+      }
+    });
+    subscribed = true;
+    await createNotificationPrisma({
+      userId: author.id,
+      actorId: signedInUser.id,
+      type: "writer_subscribed",
+      message: `${signedInUser.name} subscribed to your writing.`,
+      dedupeKey: `writer-subscribed:${author.id}:${signedInUser.id}`
+    });
+  }
+
+  const subscriberCount = await getPrisma().writerSubscription.count({
+    where: { authorId: author.id }
+  });
+  return sendJson(res, 200, {
+    authorId: author.id,
+    subscribed,
+    subscriberCount
+  });
+}
+
+function publicationRole(publication, user) {
+  if (!user) return null;
+  if (publication.ownerId === user.id) return "owner";
+  return publication.members?.find((member) => member.userId === user.id)?.role ?? null;
+}
+
+function publicPublication(publication, user, options = {}) {
+  const role = publicationRole(publication, user);
+  const canEdit = role === "owner" || role === "editor";
+  const canWrite = canEdit || role === "writer";
+  const result = {
+    id: publication.id,
+    slug: publication.slug,
+    name: publication.name,
+    description: publication.description,
+    owner: publication.owner
+      ? {
+          id: publication.owner.id,
+          name: publication.owner.name
+        }
+      : null,
+    role,
+    canEdit,
+    canWrite,
+    subscribed: Boolean(publication.subscriptions?.length),
+    counts: {
+      stories: publication._count?.stories ?? publication.stories?.length ?? 0,
+      members: publication._count?.members ?? publication.members?.length ?? 0,
+      subscribers: publication._count?.subscriptions ?? 0
+    },
+    createdAt: toIso(publication.createdAt)
+  };
+
+  if (options.detail) {
+    result.members = (publication.members ?? []).map((member) => ({
+      userId: member.userId,
+      name: member.user?.name ?? "Unknown member",
+      email: canEdit ? member.user?.email ?? null : null,
+      role: member.role
+    }));
+    result.stories = (publication.stories ?? []).map((story) => ({
+      id: story.id,
+      slug: story.slug,
+      title: story.title,
+      authorName: story.authorName,
+      dateLabel: dateLabel(story.createdAt)
+    }));
+    result.submissions = canEdit
+      ? (publication.submissions ?? []).map((submission) => ({
+          id: submission.id,
+          status: submission.status,
+          note: submission.note,
+          createdAt: toIso(submission.createdAt),
+          story: {
+            id: submission.story.id,
+            title: submission.story.title,
+            status: submission.story.status
+          },
+          author: {
+            id: submission.author.id,
+            name: submission.author.name
+          }
+        }))
+      : [];
+    result.newsletters = (publication.newsletters ?? [])
+      .filter((issue) => issue.status === "sent" || canEdit)
+      .map((issue) => ({
+        id: issue.id,
+        subject: issue.subject,
+        body: issue.body,
+        status: issue.status,
+        createdAt: toIso(issue.createdAt),
+        sentAt: toIso(issue.sentAt)
+      }));
+  }
+
+  return result;
+}
+
+function publicationListInclude(user) {
+  return {
+    owner: {
+      select: {
+        id: true,
+        name: true
+      }
+    },
+    members: {
+      ...(user ? { where: { userId: user.id } } : { where: { userId: "__guest__" } }),
+      select: {
+        userId: true,
+        role: true
+      }
+    },
+    subscriptions: {
+      ...(user ? { where: { subscriberId: user.id } } : { where: { subscriberId: "__guest__" } }),
+      select: {
+        subscriberId: true
+      }
+    },
+    _count: {
+      select: {
+        stories: {
+          where: { status: "published" }
+        },
+        members: true,
+        subscriptions: true
+      }
+    }
+  };
+}
+
+async function findPublicationDetailPrisma(publicationId, user) {
+  const publication = await getPrisma().publication.findUnique({
+    where: { id: publicationId },
+    include: {
+      owner: {
+        select: {
+          id: true,
+          name: true
+        }
+      },
+      members: {
+        orderBy: { createdAt: "asc" },
+        include: {
+          user: {
+            select: {
+              id: true,
+              name: true,
+              email: true
+            }
+          }
+        }
+      },
+      subscriptions: {
+        ...(user ? { where: { subscriberId: user.id } } : { where: { subscriberId: "__guest__" } }),
+        select: {
+          subscriberId: true
+        }
+      },
+      stories: {
+        where: { status: "published" },
+        orderBy: { createdAt: "desc" }
+      },
+      submissions: {
+        orderBy: { createdAt: "desc" },
+        include: {
+          story: true,
+          author: {
+            select: {
+              id: true,
+              name: true
+            }
+          }
+        }
+      },
+      newsletters: {
+        orderBy: { createdAt: "desc" }
+      },
+      _count: {
+        select: {
+          stories: {
+            where: { status: "published" }
+          },
+          members: true,
+          subscriptions: true
+        }
+      }
+    }
+  });
+  if (!publication) throw new HttpError(404, "Publication not found.");
+  return publication;
+}
+
+function requirePublicationRole(publication, user, allowedRoles) {
+  const role = publicationRole(publication, user);
+  if (!allowedRoles.includes(role)) {
+    throw new HttpError(403, "You do not have permission for this publication action.");
+  }
+  return role;
+}
+
+async function handlePublicationIndexPrisma(req, res) {
+  await ensureDb();
+  const user = await getUserFromRequestPrisma(req);
+  const publications = await getPrisma().publication.findMany({
+    orderBy: { createdAt: "desc" },
+    take: 50,
+    include: publicationListInclude(user)
+  });
+  return sendJson(res, 200, {
+    publications: publications.map((publication) => publicPublication(publication, user))
+  });
+}
+
+async function handleCreatePublicationPrisma(req, res) {
+  await ensureDb();
+  const signedInUser = await requireUserPrisma(req);
+  const body = await readJsonBody(req);
+  const name = normalizeText(body.name, 80);
+  const description = normalizeText(body.description, 240);
+  if (name.length < 3) throw new HttpError(400, "Publication name is too short.");
+  if (description.length < 10) throw new HttpError(400, "Publication description is too short.");
+
+  const client = getPrisma();
+  const baseSlug = slugify(name);
+  const existing = await client.publication.findUnique({ where: { slug: baseSlug } });
+  const id = crypto.randomUUID();
+  const slug = existing ? `${baseSlug}-${id.slice(0, 6)}` : baseSlug;
+  await client.$transaction([
+    client.publication.create({
+      data: {
+        id,
+        slug,
+        name,
+        description,
+        ownerId: signedInUser.id,
+        createdAt: new Date()
+      }
+    }),
+    client.publicationMember.create({
+      data: {
+        publicationId: id,
+        userId: signedInUser.id,
+        role: "owner",
+        createdAt: new Date()
+      }
+    })
+  ]);
+
+  const publication = await findPublicationDetailPrisma(id, signedInUser);
+  return sendJson(res, 201, {
+    publication: publicPublication(publication, signedInUser, { detail: true })
+  });
+}
+
+async function handlePublicationDetailPrisma(req, res, publicationId) {
+  await ensureDb();
+  const user = await getUserFromRequestPrisma(req);
+  const publication = await findPublicationDetailPrisma(publicationId, user);
+  return sendJson(res, 200, {
+    publication: publicPublication(publication, user, { detail: true })
+  });
+}
+
+async function handleAddPublicationMemberPrisma(req, res, publicationId) {
+  await ensureDb();
+  const signedInUser = await requireUserPrisma(req);
+  const publication = await findPublicationDetailPrisma(publicationId, signedInUser);
+  requirePublicationRole(publication, signedInUser, ["owner"]);
+  const body = await readJsonBody(req);
+  const email = normalizeText(body.email, 120).toLowerCase();
+  const role = ["editor", "writer"].includes(body.role) ? body.role : "writer";
+  const member = await getPrisma().user.findUnique({ where: { email } });
+  if (!member) throw new HttpError(404, "No Inkline user has that email.");
+  if (member.id === publication.ownerId) throw new HttpError(400, "The owner role cannot be changed.");
+  await assertUsersMayInteractPrisma(signedInUser.id, member.id);
+
+  await getPrisma().publicationMember.upsert({
+    where: {
+      publicationId_userId: {
+        publicationId: publication.id,
+        userId: member.id
+      }
+    },
+    create: {
+      publicationId: publication.id,
+      userId: member.id,
+      role,
+      createdAt: new Date()
+    },
+    update: { role }
+  });
+  await createNotificationPrisma({
+    userId: member.id,
+    actorId: signedInUser.id,
+    type: "publication_member",
+    message: `You joined ${publication.name} as ${role}.`,
+    dedupeKey: `publication-member:${publication.id}:${member.id}`
+  });
+
+  const updatedPublication = await findPublicationDetailPrisma(publication.id, signedInUser);
+  return sendJson(res, 200, {
+    publication: publicPublication(updatedPublication, signedInUser, { detail: true })
+  });
+}
+
+async function handleSubmitToPublicationPrisma(req, res, publicationId) {
+  await ensureDb();
+  const signedInUser = await requireUserPrisma(req);
+  const publication = await findPublicationDetailPrisma(publicationId, signedInUser);
+  requirePublicationRole(publication, signedInUser, ["owner", "editor", "writer"]);
+  const body = await readJsonBody(req);
+  const storyId = normalizeText(body.storyId, 160);
+  const note = normalizeText(body.note, 300);
+  const story = await getPrisma().story.findUnique({ where: { id: storyId } });
+  if (!story || story.authorId !== signedInUser.id) {
+    throw new HttpError(404, "Choose one of your own stories.");
+  }
+  if (story.publicationId && story.publicationId !== publication.id) {
+    throw new HttpError(409, "That story already belongs to another publication.");
+  }
+
+  const existing = await getPrisma().publicationSubmission.findUnique({
+    where: {
+      publicationId_storyId: {
+        publicationId: publication.id,
+        storyId: story.id
+      }
+    }
+  });
+  if (existing?.status === "pending") throw new HttpError(409, "That story is already awaiting review.");
+
+  const submission = existing
+    ? await getPrisma().publicationSubmission.update({
+        where: { id: existing.id },
+        data: {
+          status: "pending",
+          note,
+          reviewedBy: null,
+          reviewedAt: null,
+          createdAt: new Date()
+        }
+      })
+    : await getPrisma().publicationSubmission.create({
+        data: {
+          id: crypto.randomUUID(),
+          publicationId: publication.id,
+          storyId: story.id,
+          authorId: signedInUser.id,
+          status: "pending",
+          note,
+          createdAt: new Date()
+        }
+      });
+  const editorIds = new Set([
+    publication.ownerId,
+    ...publication.members
+      .filter((member) => member.role === "editor")
+      .map((member) => member.userId)
+  ]);
+  await Promise.all(
+    [...editorIds].map((userId) =>
+      createNotificationPrisma({
+        userId,
+        actorId: signedInUser.id,
+        storyId: story.id,
+        type: "publication_submission",
+        message: `${signedInUser.name} submitted "${story.title}" to ${publication.name}.`,
+        dedupeKey: `publication-submission:${submission.id}:${userId}`
+      })
+    )
+  );
+
+  return sendJson(res, 201, {
+    submission: {
+      id: submission.id,
+      status: submission.status
+    }
+  });
+}
+
+async function handleReviewPublicationSubmissionPrisma(req, res, publicationId, submissionId) {
+  await ensureDb();
+  const signedInUser = await requireUserPrisma(req);
+  const publication = await findPublicationDetailPrisma(publicationId, signedInUser);
+  requirePublicationRole(publication, signedInUser, ["owner", "editor"]);
+  const body = await readJsonBody(req);
+  const status = body.status === "accepted" ? "accepted" : body.status === "rejected" ? "rejected" : null;
+  if (!status) throw new HttpError(400, "Choose accepted or rejected.");
+  const submission = await getPrisma().publicationSubmission.findFirst({
+    where: {
+      id: submissionId,
+      publicationId: publication.id
+    },
+    include: {
+      story: true,
+      author: true
+    }
+  });
+  if (!submission) throw new HttpError(404, "Submission not found.");
+
+  const operations = [
+    getPrisma().publicationSubmission.update({
+      where: { id: submission.id },
+      data: {
+        status,
+        reviewedBy: signedInUser.id,
+        reviewedAt: new Date()
+      }
+    })
+  ];
+  if (status === "accepted") {
+    operations.push(
+      getPrisma().story.update({
+        where: { id: submission.storyId },
+        data: {
+          publicationId: publication.id,
+          status: "published",
+          updatedAt: new Date()
+        }
+      })
+    );
+  }
+  await getPrisma().$transaction(operations);
+  await createNotificationPrisma({
+    userId: submission.authorId,
+    actorId: signedInUser.id,
+    storyId: submission.storyId,
+    type: `publication_submission_${status}`,
+    message: `${publication.name} ${status} "${submission.story.title}".`,
+    dedupeKey: `publication-submission-review:${submission.id}`
+  });
+
+  return sendJson(res, 200, { ok: true, status });
+}
+
+async function handleTogglePublicationSubscriptionPrisma(req, res, publicationId) {
+  await ensureDb();
+  const signedInUser = await requireUserPrisma(req);
+  const publication = await findPublicationDetailPrisma(publicationId, signedInUser);
+  await assertUsersMayInteractPrisma(signedInUser.id, publication.ownerId);
+  const key = {
+    publicationId_subscriberId: {
+      publicationId: publication.id,
+      subscriberId: signedInUser.id
+    }
+  };
+  const existing = await getPrisma().publicationSubscription.findUnique({ where: key });
+  let subscribed;
+  if (existing) {
+    await getPrisma().publicationSubscription.delete({ where: key });
+    subscribed = false;
+  } else {
+    await getPrisma().publicationSubscription.create({
+      data: {
+        publicationId: publication.id,
+        subscriberId: signedInUser.id,
+        createdAt: new Date()
+      }
+    });
+    subscribed = true;
+  }
+  const subscriberCount = await getPrisma().publicationSubscription.count({
+    where: { publicationId: publication.id }
+  });
+  return sendJson(res, 200, { subscribed, subscriberCount });
+}
+
+async function handleCreateNewsletterPrisma(req, res, publicationId) {
+  await ensureDb();
+  const signedInUser = await requireUserPrisma(req);
+  const publication = await findPublicationDetailPrisma(publicationId, signedInUser);
+  requirePublicationRole(publication, signedInUser, ["owner", "editor"]);
+  const body = await readJsonBody(req);
+  const subject = normalizeText(body.subject, 120);
+  const content = String(body.body ?? "").trim().slice(0, 5000);
+  const shouldSend = Boolean(body.send);
+  if (subject.length < 3) throw new HttpError(400, "Newsletter subject is too short.");
+  if (content.length < 10) throw new HttpError(400, "Newsletter body is too short.");
+
+  const issue = await getPrisma().newsletterIssue.create({
+    data: {
+      id: crypto.randomUUID(),
+      publicationId: publication.id,
+      createdBy: signedInUser.id,
+      subject,
+      body: content,
+      status: shouldSend ? "sent" : "draft",
+      createdAt: new Date(),
+      sentAt: shouldSend ? new Date() : null
+    }
+  });
+  let recipientCount = 0;
+
+  if (shouldSend) {
+    const subscriptions = await getPrisma().publicationSubscription.findMany({
+      where: { publicationId: publication.id },
+      include: {
+        subscriber: {
+          select: {
+            id: true,
+            email: true
+          }
+        }
+      }
+    });
+    const recipientIds = subscriptions.map((subscription) => subscription.subscriber.id);
+    const blocks = recipientIds.length
+      ? await getPrisma().block.findMany({
+          where: {
+            OR: [
+              {
+                blockerId: signedInUser.id,
+                blockedUserId: { in: recipientIds }
+              },
+              {
+                blockerId: { in: recipientIds },
+                blockedUserId: signedInUser.id
+              }
+            ]
+          }
+        })
+      : [];
+    const blockedRecipients = new Set(
+      blocks.map((block) =>
+        block.blockerId === signedInUser.id ? block.blockedUserId : block.blockerId
+      )
+    );
+    const deliverableSubscriptions = subscriptions.filter(
+      (subscription) => !blockedRecipients.has(subscription.subscriber.id)
+    );
+    recipientCount = deliverableSubscriptions.length;
+    const link = `${appOrigin(req)}/?publication=${encodeURIComponent(publication.id)}`;
+    const htmlBody = content
+      .split(/\n{2,}/)
+      .map((paragraph) => `<p>${escapeAttribute(paragraph)}</p>`)
+      .join("");
+    await Promise.all(
+      deliverableSubscriptions.flatMap((subscription) => [
+        createNotificationPrisma({
+          userId: subscription.subscriber.id,
+          actorId: signedInUser.id,
+          type: "publication_newsletter",
+          message: `${publication.name}: ${subject}`,
+          dedupeKey: `publication-newsletter:${issue.id}:${subscription.subscriber.id}`
+        }),
+        sendEmailPrisma(req, {
+          type: "publication-newsletter",
+          to: subscription.subscriber.email,
+          subject: `${publication.name}: ${subject}`,
+          link,
+          text: `${subject}\n\n${content}\n\n${link}`,
+          html: `<h1>${escapeAttribute(subject)}</h1>${htmlBody}<p><a href="${escapeAttribute(link)}">Read ${escapeAttribute(publication.name)}</a></p>`
+        })
+      ])
+    );
+  }
+
+  return sendJson(res, 201, {
+    issue: {
+      id: issue.id,
+      status: issue.status
+    },
+    recipientCount
+  });
+}
+
+async function handleBlockIndexPrisma(req, res) {
+  await ensureDb();
+  const signedInUser = await requireUserPrisma(req);
+  const blocks = await getPrisma().block.findMany({
+    where: { blockerId: signedInUser.id },
+    orderBy: { createdAt: "desc" },
+    include: {
+      blockedUser: {
+        select: {
+          id: true,
+          name: true
+        }
+      }
+    }
+  });
+  return sendJson(res, 200, {
+    blockedUsers: blocks.map((block) => ({
+      id: block.blockedUser.id,
+      name: block.blockedUser.name,
+      createdAt: toIso(block.createdAt)
+    }))
+  });
+}
+
+async function handleToggleBlockPrisma(req, res) {
+  await ensureDb();
+  const signedInUser = await requireUserPrisma(req);
+  const body = await readJsonBody(req);
+  const blockedUserId = normalizeText(body.userId, 160);
+  if (blockedUserId === signedInUser.id) throw new HttpError(400, "You cannot block yourself.");
+  const blockedUser = await getPrisma().user.findUnique({ where: { id: blockedUserId } });
+  if (!blockedUser) throw new HttpError(404, "User not found.");
+
+  const key = {
+    blockerId_blockedUserId: {
+      blockerId: signedInUser.id,
+      blockedUserId
+    }
+  };
+  const existing = await getPrisma().block.findUnique({ where: key });
+  let blocked;
+  if (existing) {
+    await getPrisma().block.delete({ where: key });
+    blocked = false;
+  } else {
+    await getPrisma().$transaction([
+      getPrisma().block.create({
+        data: {
+          blockerId: signedInUser.id,
+          blockedUserId,
+          createdAt: new Date()
+        }
+      }),
+      getPrisma().authorFollow.deleteMany({
+        where: {
+          OR: [
+            { userId: signedInUser.id, authorKey: `user-${blockedUserId}` },
+            { userId: blockedUserId, authorKey: `user-${signedInUser.id}` }
+          ]
+        }
+      }),
+      getPrisma().writerSubscription.deleteMany({
+        where: {
+          OR: [
+            { subscriberId: signedInUser.id, authorId: blockedUserId },
+            { subscriberId: blockedUserId, authorId: signedInUser.id }
+          ]
+        }
+      }),
+      getPrisma().publicationSubscription.deleteMany({
+        where: {
+          OR: [
+            {
+              subscriberId: signedInUser.id,
+              publication: { ownerId: blockedUserId }
+            },
+            {
+              subscriberId: blockedUserId,
+              publication: { ownerId: signedInUser.id }
+            }
+          ]
+        }
+      })
+    ]);
+    blocked = true;
+  }
+
+  return sendJson(res, 200, {
+    userId: blockedUserId,
+    blocked
+  });
+}
+
+function publicReport(report) {
+  return {
+    id: report.id,
+    reason: report.reason,
+    details: report.details,
+    status: report.status,
+    createdAt: toIso(report.createdAt),
+    dateLabel: dateLabel(report.createdAt),
+    reporter: report.reporter
+      ? {
+          id: report.reporter.id,
+          name: report.reporter.name
+        }
+      : null,
+    reportedUser: report.reportedUser
+      ? {
+          id: report.reportedUser.id,
+          name: report.reportedUser.name
+        }
+      : null,
+    story: report.story
+      ? {
+          id: report.story.id,
+          title: report.story.title
+        }
+      : null,
+    response: report.response
+      ? {
+          id: report.response.id,
+          text: report.response.text,
+          name: report.response.name
+        }
+      : null
+  };
+}
+
+async function handleCreateReportPrisma(req, res) {
+  await ensureDb();
+  const signedInUser = await requireUserPrisma(req);
+  const body = await readJsonBody(req);
+  const storyId = normalizeText(body.storyId, 160);
+  const responseId = normalizeText(body.responseId, 160);
+  const allowedReasons = new Set(["spam", "harassment", "hate", "misinformation", "other"]);
+  const reason = allowedReasons.has(body.reason) ? body.reason : "other";
+  const details = normalizeText(body.details, 500);
+  if (Boolean(storyId) === Boolean(responseId)) {
+    throw new HttpError(400, "Report either a story or a response.");
+  }
+  if (details.length < 5) throw new HttpError(400, "Add a short explanation for moderators.");
+
+  let reportedUserId;
+  if (storyId) {
+    const story = await getPrisma().story.findUnique({ where: { id: storyId } });
+    if (!story) throw new HttpError(404, "Story not found.");
+    reportedUserId = story.authorId;
+  } else {
+    const response = await getPrisma().response.findUnique({ where: { id: responseId } });
+    if (!response) throw new HttpError(404, "Response not found.");
+    reportedUserId = response.userId;
+  }
+  if (reportedUserId === signedInUser.id) throw new HttpError(400, "You cannot report your own content.");
+
+  const existing = await getPrisma().report.findFirst({
+    where: {
+      reporterId: signedInUser.id,
+      status: "open",
+      ...(storyId ? { storyId } : { responseId })
+    }
+  });
+  if (existing) throw new HttpError(409, "You already reported this content.");
+
+  const report = await getPrisma().report.create({
+    data: {
+      id: crypto.randomUUID(),
+      reporterId: signedInUser.id,
+      reportedUserId,
+      storyId: storyId || null,
+      responseId: responseId || null,
+      reason,
+      details,
+      status: "open",
+      createdAt: new Date()
+    }
+  });
+  return sendJson(res, 201, {
+    report: {
+      id: report.id,
+      status: report.status
+    }
+  });
+}
+
+async function handleReviewReportPrisma(req, res, reportId) {
+  await ensureDb();
+  const signedInAdmin = await requireAdminPrisma(req);
+  const body = await readJsonBody(req);
+  const status = body.status === "dismissed" ? "dismissed" : "resolved";
+  const action = ["hide", "remove"].includes(body.action) ? body.action : "none";
+  const report = await getPrisma().report.findUnique({
+    where: { id: reportId },
+    include: {
+      story: true,
+      response: true
+    }
+  });
+  if (!report) throw new HttpError(404, "Report not found.");
+
+  if (status === "resolved" && report.responseId && action === "hide") {
+    await getPrisma().response.updateMany({
+      where: { id: report.responseId },
+      data: {
+        status: "hidden",
+        moderatedAt: new Date(),
+        moderatedBy: signedInAdmin.id
+      }
+    });
+  }
+  if (status === "resolved" && report.responseId && action === "remove") {
+    await getPrisma().response.deleteMany({ where: { id: report.responseId } });
+  }
+  if (status === "resolved" && report.storyId && action === "remove") {
+    await getPrisma().story.deleteMany({ where: { id: report.storyId } });
+    await deleteStoredImageIfOwned(report.story?.image);
+  }
+
+  await getPrisma().report.update({
+    where: { id: report.id },
+    data: {
+      status,
+      resolvedAt: new Date(),
+      resolvedBy: signedInAdmin.id
+    }
+  });
+  return sendJson(res, 200, { ok: true, status, action });
 }
 
 async function handleUploadPrisma(req, res) {
@@ -2293,7 +3330,7 @@ async function handleAdminModerationPrisma(req, res) {
   await ensureDb();
   await requireAdminPrisma(req);
   const client = getPrisma();
-  const [responses, stories, diagnostics] = await Promise.all([
+  const [responses, stories, reports, diagnostics] = await Promise.all([
     client.response.findMany({
       orderBy: { createdAt: "desc" },
       take: 30,
@@ -2303,6 +3340,40 @@ async function handleAdminModerationPrisma(req, res) {
       orderBy: { createdAt: "desc" },
       take: 30,
       include: storyPrismaInclude(null)
+    }),
+    client.report.findMany({
+      orderBy: [
+        { status: "asc" },
+        { createdAt: "desc" }
+      ],
+      take: 50,
+      include: {
+        reporter: {
+          select: {
+            id: true,
+            name: true
+          }
+        },
+        reportedUser: {
+          select: {
+            id: true,
+            name: true
+          }
+        },
+        story: {
+          select: {
+            id: true,
+            title: true
+          }
+        },
+        response: {
+          select: {
+            id: true,
+            text: true,
+            name: true
+          }
+        }
+      }
     }),
     client.systemEvent.findMany({
       orderBy: { createdAt: "desc" },
@@ -2328,6 +3399,7 @@ async function handleAdminModerationPrisma(req, res) {
   return sendJson(res, 200, {
     responses: responses.map(publicAdminResponseFromPrisma),
     stories: stories.map((story) => publicAdminStoryFromPrisma(story, responseCounts)),
+    reports: reports.map(publicReport),
     diagnostics: diagnostics.map(serializeSystemEvent)
   });
 }
@@ -2430,6 +3502,67 @@ async function handleApi(req, res, url) {
     return handleReadNotificationsPrisma(req, res);
   }
 
+  if (req.method === "GET" && url.pathname === "/api/me/analytics") {
+    return handleWriterAnalyticsPrisma(req, res);
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/blocks") {
+    return handleBlockIndexPrisma(req, res);
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/blocks") {
+    return handleToggleBlockPrisma(req, res);
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/reports") {
+    return handleCreateReportPrisma(req, res);
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/publications") {
+    return handlePublicationIndexPrisma(req, res);
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/publications") {
+    return handleCreatePublicationPrisma(req, res);
+  }
+
+  const writerSubscriptionRoute = url.pathname.match(/^\/api\/writers\/([^/]+)\/subscription$/);
+  if (writerSubscriptionRoute) {
+    const authorId = decodeURIComponent(writerSubscriptionRoute[1]);
+    if (req.method === "GET") {
+      return handleWriterSubscriptionStatePrisma(req, res, authorId);
+    }
+    if (req.method === "POST") {
+      return handleToggleWriterSubscriptionPrisma(req, res, authorId);
+    }
+  }
+
+  const publicationRoute = url.pathname.match(/^\/api\/publications\/([^/]+)(?:\/([^/]+))?(?:\/([^/]+))?$/);
+  if (publicationRoute) {
+    const publicationId = decodeURIComponent(publicationRoute[1]);
+    const action = publicationRoute[2];
+    const itemId = publicationRoute[3] ? decodeURIComponent(publicationRoute[3]) : null;
+
+    if (req.method === "GET" && !action) {
+      return handlePublicationDetailPrisma(req, res, publicationId);
+    }
+    if (req.method === "POST" && action === "members" && !itemId) {
+      return handleAddPublicationMemberPrisma(req, res, publicationId);
+    }
+    if (req.method === "POST" && action === "submissions" && !itemId) {
+      return handleSubmitToPublicationPrisma(req, res, publicationId);
+    }
+    if (req.method === "POST" && action === "submissions" && itemId) {
+      return handleReviewPublicationSubmissionPrisma(req, res, publicationId, itemId);
+    }
+    if (req.method === "POST" && action === "subscribe" && !itemId) {
+      return handleTogglePublicationSubscriptionPrisma(req, res, publicationId);
+    }
+    if (req.method === "POST" && action === "newsletters" && !itemId) {
+      return handleCreateNewsletterPrisma(req, res, publicationId);
+    }
+  }
+
   if (req.method === "POST" && url.pathname === "/api/uploads") {
     return handleUploadPrisma(req, res);
   }
@@ -2440,6 +3573,11 @@ async function handleApi(req, res, url) {
 
   if (req.method === "GET" && url.pathname === "/api/admin/moderation") {
     return handleAdminModerationPrisma(req, res);
+  }
+
+  const directAdminReportRoute = url.pathname.match(/^\/api\/admin\/reports\/([^/]+)$/);
+  if (directAdminReportRoute && req.method === "POST") {
+    return handleReviewReportPrisma(req, res, decodeURIComponent(directAdminReportRoute[1]));
   }
 
   const directAdminResponseRoute = url.pathname.match(/^\/api\/admin\/responses\/([^/]+)(?:\/([^/]+))?$/);
@@ -2530,6 +3668,10 @@ async function handleApi(req, res, url) {
 
     if (req.method === "POST" && action === "bookmark") {
       return handleBookmarkStoryPrisma(req, res, storyId);
+    }
+
+    if (req.method === "POST" && (action === "view" || action === "read")) {
+      return handleTrackStoryMetricPrisma(req, res, storyId, action);
     }
 
     if (req.method === "POST" && action === "responses") {
